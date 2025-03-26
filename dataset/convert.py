@@ -3,8 +3,8 @@ import os
 import shutil
 
 
-source_path = "/home/yu/dataset/caltech101"
-target_path = "/home/yu/dataset/caltech101_Gen"
+source_path = "/kaggle/working/BPT-VLM/dataset/caltech101"
+target_path = "/kaggle/working/BPT-VLM/dataset/caltech101_Gen"
 # image_train_source_path = "cars_train"
 # image_test_source_path = "cars_test"
 
