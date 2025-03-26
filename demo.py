@@ -22,8 +22,8 @@ from torch.nn import functional as F
 __classification__ = ["CIFAR100","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
-__dataset__ = "/home/yu/dataset"
-__output__ = "/home/yu/dataset/result"
+__dataset__ = "dataset"
+__output__ = "dataset/result"
 __backbone__ = "ViT-B/32"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
