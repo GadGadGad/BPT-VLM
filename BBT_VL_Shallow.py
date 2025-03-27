@@ -10,8 +10,8 @@ from model.Shallow_Prompt_CLIP import PromptCLIP_Shallow
 import numpy as np
 import time
 
-__classification__ = ["CIFAR100","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
-                      "Food101","SUN397","ImageNet"]
+__classification__ = ["CIFAR100","CIFAR10","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
+                      "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
 __dataset__ = "/kaggle/working/BPT-VLM/dataset"
 __output__ = "/kaggle/working/BPT-VLM/dataset/result"

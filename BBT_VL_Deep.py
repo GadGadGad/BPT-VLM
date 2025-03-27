@@ -5,7 +5,7 @@ from tqdm import tqdm
 from algorithm.CMA_ES import shallow_cma,deep_cma
 from model.Deep_Prompt_CLIP import PromptCLIP_Deep
 
-__classification__ = ["CIFAR100","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
+__classification__ = ["CIFAR100","CIFAR10","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_lmmaes"]
 __dataset__ = "/kaggle/working/BPT-VLM/dataset"
