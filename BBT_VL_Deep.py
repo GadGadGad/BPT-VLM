@@ -11,7 +11,7 @@ __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_lmmaes"]
 __dataset__ = "/kaggle/working/BPT-VLM/dataset"
 __output__ = "/kaggle/working/BPT-VLM/dataset/result"
 # __output__ = "/home/yu/result"
-__backbone__ = "ViT-B/32"
+# __backbone__ = "ViT-B/32"
 
 
 parser = argparse.ArgumentParser()
@@ -19,6 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", default="CIFAR100", type=str)
 parser.add_argument("--opt", default="deep_cma", type=str)
 parser.add_argument("--parallel", action='store_true', help='Whether to allow parallel evaluation')
+parser.add_argument("--backbone", default="ViT-B/32", type=str)
 
 args = parser.parse_args()
 assert "deep" in args.opt, "Only deep prompt tuning is supported in this file."
@@ -28,7 +29,7 @@ cfg["opt_name"] = args.opt
 cfg["data_dir"] = __dataset__
 cfg["output_dir"] = __output__
 cfg["opt_name"] = args.opt
-cfg["backbone"] = __backbone__
+cfg["backbone"] = args.backbone
 cfg["budget"] = cfg[args.task_name]["budget"]
 cfg["test_every"] = cfg[args.task_name]["test_every"]
 cfg["maxiter"] = cfg["budget"] // (cfg["popsize"] * cfg["num_prompt_layer"])

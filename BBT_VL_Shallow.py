@@ -16,12 +16,13 @@ __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
 __dataset__ = "/kaggle/working/BPT-VLM/dataset"
 __output__ = "/kaggle/working/BPT-VLM/dataset/result"
 # __output__ = "/home/yu/result"
-__backbone__ = "ViT-B/32"
+# __backbone__ = "ViT-B/32"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", default="CIFAR100", type=str)
 parser.add_argument("--opt", default="shallow_cma", type=str)
 parser.add_argument("--parallel", action='store_true', help='Whether to allow parallel evaluation')
+parser.add_argument("--backbone", default="ViT-B/32", type=str)
 
 
 
@@ -33,7 +34,7 @@ cfg["opt_name"] = args.opt
 cfg["data_dir"] = __dataset__
 cfg["output_dir"] = __output__
 cfg["opt_name"] = args.opt
-cfg["backbone"] = __backbone__
+cfg["backbone"] = args.backbone
 
 for k,v in cfg[args.task_name].items():
     cfg[k]=v
