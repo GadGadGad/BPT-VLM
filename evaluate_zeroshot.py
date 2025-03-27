@@ -44,7 +44,7 @@ elif dataset_name == "CIFAR100":
     print("Loading CIFAR-100 dataset...")
     test_dataset = datasets.CIFAR100(root="./data", train=False, download=True, transform=preprocess)
 
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
 class_names = test_dataset.classes
 NUM_CLASSES = len(class_names)
