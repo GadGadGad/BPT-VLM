@@ -4,8 +4,9 @@ import torch
 from torch.nn import functional as F
 import numpy as np
 import clip
-from torchvision.datasets import CIFAR100
+from torchvision.datasets import CIFAR100, CIFAR10
 from dataset.cifar100 import load_train_cifar100, load_test_cifar100
+from dataset.cifar10 import load_train_cifar10, load_test_cifar10
 from model.deep_encoder import TextEncoder_Deep,VisionEncoder_Deep
 from model.analysis_utils import Analysis_Util
 from dataset.general import load_train,load_test
@@ -324,6 +325,12 @@ class PromptCLIP_Deep:
             self.n_cls = len(self.classes)
             self.train_data,self.train_loader = load_train_cifar100(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess)
             self.test_data, self.test_loader = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess)
+        elif self.task_name == 'CIFAR10':
+            self.dataset = CIFAR10(os.path.expanduser("~/.cache"), transform=self.preprocess, download=True)
+            self.classes = self.dataset.classes
+            self.n_cls = len(self.classes)
+            self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess)
+            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
         elif self.task_name == 'StanfordCars':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,seed=self.seed,shots=self.k_shot,preprocess=self.preprocess,
                                                            root=self.data_dir,dataset_dir="Cars_Gen")
