@@ -243,7 +243,7 @@ class PromptCLIP_Shallow:
                        "pgd_config": self.pgd_config}
             Analysis_Util.save_results(content,output_dir,fname)
             # ---------------save_results-----------------------------------
-            #print("current loss: {}".format(self.min_loss))
+            print("current loss: {}".format(self.min_loss))
         return loss
     def _pgd_attack(self, images, labels, text_features, image_prompt, config):
         """ Performs PGD attack """
@@ -280,27 +280,48 @@ class PromptCLIP_Shallow:
         # Return final perturbed image
         return (images + delta).detach()
     @torch.no_grad()
-    def test(self):
+    def test(self, attack_config=None):
+        """ Evaluate accuracy, optionally with PGD attack """
         if self.best_prompt_text is None or self.best_prompt_image is None:
             print("Warning: Trying to test without best prompts found yet. Returning 0 accuracy.")
             return torch.tensor(0.0)
-        correct = 0.
-        parallel = self.parallel
-        self.parallel=self.text_encoder.parallel = self.image_encoder.parallel = False
-        for batch in self.test_loader:
-            image,label = self.parse_batch(batch)
-            text_features = self.text_encoder(self.best_prompt_text)
-            image_features = self.image_encoder(image,self.best_prompt_image)
 
+        correct = 0.
+        total = 0.
+        # Ensure evaluation is done sequentially (no parallelism)
+        original_parallel_state = self.parallel
+        self.parallel = self.text_encoder.parallel = self.image_encoder.parallel = False
+
+        # Pre-compute text features using the best text prompt
+        text_features = self.text_encoder(self.best_prompt_text)
+        text_features = text_features / text_features.norm(dim=-1,keepdim=True)
+
+        desc = "Testing Clean"
+        if attack_config and attack_config.get("enabled", False):
+             desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
+
+        for batch in tqdm(self.test_loader, desc=desc, leave=False):
+            image,label = self.parse_batch(batch) 
+            total += image.size(0)
+
+            eval_image = image 
+
+            if attack_config and attack_config.get("enabled", False):
+                 with torch.enable_grad():
+                      eval_image = self._pgd_attack(image, label, text_features, self.best_prompt_image, attack_config)
+
+            image_features = self.image_encoder(eval_image, self.best_prompt_image)
             image_features = image_features / image_features.norm(dim=-1,keepdim=True)
-            text_features = text_features / text_features.norm(dim=-1,keepdim=True)
+
             logit_scale = self.logit_scale.exp()
             logits = logit_scale*image_features@text_features.t()
             prediction = logits.argmax(dim=-1)
             correct += (prediction == label).float().sum()
-        self.parallel=self.text_encoder.parallel = self.image_encoder.parallel = parallel
-        acc = correct/len(self.test_data)
-        #print("Best Prompt Embedding - Acc : "+str(acc))
+
+        self.parallel=self.text_encoder.parallel = self.image_encoder.parallel = original_parallel_state
+
+        acc = correct/total 
+        print(f"Accuracy ({desc}): {acc:.4f}") 
         return acc
 
     def load_dataset(self):
