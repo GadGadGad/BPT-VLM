@@ -13,8 +13,8 @@ import os #
 __classification__ = ["CIFAR100","CIFAR10","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
-__dataset__ = "./dataset"
-__output__ = "./dataset/result"
+__dataset__ = "/kaggle/working/BPT-VLM/dataset"
+__output__ = "/kaggle/working/BPT-VLM/dataset/result"
 # __output__ = "/home/yu/result"
 # __backbone__ = "ViT-B/32"
 
@@ -69,20 +69,18 @@ def fitness_eval(prompt_zip_np):
     # Convert numpy array back to the required format (split L and V)
     # This function is primarily for optimizers expecting a single evaluation function.
     # The main loop below handles batch evaluation more efficiently for CMA-ES variants.
-    prompt_zip_np = np.array(prompt_zip_np) # Ensure it's numpy
     prompt_text_intrinsic = prompt_zip_np[:intrinsic_dim_L]
     prompt_image_intrinsic = prompt_zip_np[intrinsic_dim_L:]
 
-    # Generate prompts (needs to be done for a single individual here)
-    prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic]) # List with one element
-    prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic]) # List with one element
+    prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic])
+    prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic])
 
-    # Evaluate the single prompt pair
-    # Set parallel to False temporarily for single eval call consistency
     original_parallel = prompt_clip.parallel
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
-    fitness = prompt_clip.eval(list(zip(prompt_text_list, prompt_image_list))[0]).item() # Pass the single tuple
+    # eval now returns a float when parallel=False
+    fitness = prompt_clip.eval(list(zip(prompt_text_list, prompt_image_list))[0]) # REMOVED .item()
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = original_parallel # Restore
+
 
     # Logging (similar to original, adjust if needed)
     if prompt_clip.num_call % (prompt_clip.test_every) == 0:
@@ -168,35 +166,28 @@ else: # Handle custom CMA-ES loop (like original shallow_cma might have)
         prompt_clip.image_encoder.set_context(image_context)
 
         print("Starting Optimization Loop...")
-        # Assume opt (e.g., shallow_cma) has ask() and tell()
         while not opt.stop():
-            solutions = opt.ask() # Get population solutions [popsize, ndim]
+            solutions = opt.ask()
 
-            # Generate prompts from intrinsic vectors
             prompt_text_list = prompt_clip.generate_text_prompts([x[:intrinsic_dim_L] for x in solutions])
             prompt_image_list = prompt_clip.generate_visual_prompts([x[intrinsic_dim_L:] for x in solutions])
 
-            # Evaluate fitness (either parallel or sequential)
             if cfg["parallel"]:
-                # Parallel evaluation: pass lists directly
-                # prompt_clip.eval handles the internal parallel logic
-                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = True # Ensure parallel mode
-                fitnesses = prompt_clip.eval([prompt_text_list, prompt_image_list]) # Returns a list of losses
-                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False # Revert after eval
-                # fitnesses = [x.item() for x in tqdm(fitnesses, ncols=80, desc="Eval Parallel Pop")] # Removed item() call as eval should return list of floats now
-                print(f"Eval Parallel Pop (call {prompt_clip.num_call})") # Simple print instead of tqdm bar
+                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = True
+                # eval now returns a list of floats when parallel=True
+                fitnesses = prompt_clip.eval([prompt_text_list, prompt_image_list]) # fitnesses is now List[float]
+                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
+                # The print below is fine, no need for tqdm or .item()
+                # print(f"Eval Parallel Pop (call {prompt_clip.num_call})") # Optional: Simple print
 
             else:
-                # Sequential evaluation: iterate and call eval
-                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False # Ensure sequential mode
+                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
                 fitnesses = []
                 for i, p_zip in enumerate(tqdm(zip(prompt_text_list, prompt_image_list), total=len(solutions), ncols=80, desc="Eval Sequential Pop")):
-                     fit = prompt_clip.eval(p_zip) # eval now handles single input correctly
-                     fitnesses.append(fit.item() if isinstance(fit, torch.Tensor) else fit) # Handle tensor or float return
-                     # The logging inside eval handles printing loss/acc periodically
+                     # eval now returns a float when parallel=False
+                     fitnesses.append(prompt_clip.eval(p_zip)) # No need for .item() or type check
 
-            # Tell optimizer the results
-            opt.tell(solutions, fitnesses)
+            opt.tell(solutions, fitnesses) # Pass the list of floats
 
             # Optional: Print progress summary less frequently than test_every
             # if prompt_clip.num_call % (cfg["popsize"] * 5) == 0: # Every 5 generations approx

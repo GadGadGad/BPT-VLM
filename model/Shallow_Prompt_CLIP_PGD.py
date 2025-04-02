@@ -9,7 +9,6 @@ from dataset.cifar10 import load_train_cifar10, load_test_cifar10
 from model.shallow_encoder import TextEncoder,VisionEncoder
 from model.analysis_utils import Analysis_Util
 from dataset.general import load_train,load_test
-from tqdm import tqdm
 class PromptCLIP_Shallow:
     def __init__(self,task_name,cfg):
         self.task_name = task_name
@@ -49,7 +48,6 @@ class PromptCLIP_Shallow:
         self.best_prompt_text = None
         self.best_prompt_image = None
         self.best_accuracy = 0
-        self.best_accuracy_pgd = 0
         self.min_loss = None
         self.loss = []
         self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize
@@ -77,7 +75,8 @@ class PromptCLIP_Shallow:
         print('[Conv] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
         for p in self.linear_V.parameters():
             torch.nn.init.normal_(p, mu, std)
-        self.pgd_config = cfg.get("pgd", {"enabled": False})
+
+        self.pgd_config = cfg.get("pgd", {"enabled": False}) # Get PGD config, default to disabled
         if self.pgd_config["enabled"]:
             print("PGD Attack Testing Enabled.")
             # Precompute normalization bounds for clipping
@@ -91,7 +90,7 @@ class PromptCLIP_Shallow:
                 print(f"  PGD Epsilon: {self.pgd_config['epsilon']}, Alpha: {self.pgd_config['alpha']}, Iter: {self.pgd_config['num_iter']}")
             except Exception as e:
                  print(f"Warning: Could not extract mean/std from preprocess for PGD clipping. PGD might not work correctly. Error: {e}")
-                 self.pgd_config["enabled"] = False 
+                 self.pgd_config["enabled"] = False # Disable if we can't get stats
 
     def get_text_information(self,caption=None):
         # classification task - caption - None
@@ -163,145 +162,214 @@ class PromptCLIP_Shallow:
         prompt_text,prompt_image = prompt_zip[0],prompt_zip[1]
         self.num_call += 1
         loss = 0
+        current_prompt_text = None # Store the text prompt associated with min loss in this batch
+        current_prompt_image = None # Store the image prompt associated with min loss in this batch
+
         if self.parallel:
-            loss = [0]*self.popsize
-            
-        text_features = self.text_encoder(prompt_text) # if parallel, text_features.shape = [n_cls * popsize, *, *]
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        
+            loss = [torch.tensor(0.0, device=self.device) for _ in range(self.popsize)]
+            text_features = self.text_encoder(prompt_text) # if parallel, text_features.shape = [n_cls * popsize, *, *]
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+            # Store prompts now in case we need them later for best_prompt update
+            if not isinstance(prompt_text, list): prompt_text = [prompt_text] # Should already be list
+            if not isinstance(prompt_image, list): prompt_image = [prompt_image] # Should already be list
+            current_prompt_text = prompt_text
+            current_prompt_image = prompt_image
+        else:
+            # Handle single prompt case
+            text_features = self.text_encoder(prompt_text)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+            current_prompt_text = prompt_text
+            current_prompt_image = prompt_image
+            loss = torch.tensor(0.0, device=self.device)
 
         for batch in self.train_loader:
-            image,label = self.parse_batch(batch)
-            image_features = self.image_encoder(image,prompt_image)
-            image_features = image_features / image_features.norm(dim=-1,keepdim=True)
+            image,label = self.parse_batch(batch) # image shape [B*pop, C, H, W] if parallel else [B, C, H, W]
+            # IMPORTANT: Pass the correct prompt structure to image_encoder
+            # If parallel, prompt_image is already a list. If sequential, it's a tensor.
+            img_enc_prompt = prompt_image if self.parallel else prompt_image
+            image_features = self.image_encoder(image, img_enc_prompt) # prompt_image is list if parallel, tensor otherwise
+            image_features = image_features / image_features.norm(dim=-1,keepdim=True) # shape [B*pop, D] or [B, D]
             logit_scale = self.logit_scale.exp()
+
             if self.parallel:
-                B = int(image_features.shape[0]/self.popsize)
+                B = int(image_features.shape[0]/self.popsize) # Original batch size
+                pop_img_features = image_features.view(self.popsize, B, -1) # [pop, B, D]
+                pop_txt_features = text_features.view(self.popsize, self.n_cls, -1) # [pop, n_cls, D]
+
                 for i in range(self.popsize):
-                    start_text = i * self.n_cls
-                    start_image = i * B
-                    tmp_text_features = text_features[start_text:start_text+self.n_cls]
-                    tmp_image_features = image_features[start_image:start_image+B]
-                    tmp_logits = logit_scale*tmp_image_features@tmp_text_features.t()
-                    loss[i]+=self.metric(tmp_logits,label)
+                    tmp_logits = logit_scale * pop_img_features[i] @ pop_txt_features[i].t() # [B, n_cls]
+                    # Use .detach() to prevent graph accumulation if metric involves ops not under no_grad
+                    loss[i] += self.metric(tmp_logits, label).detach() # label shape [B]
             else:
                 logits = logit_scale*image_features@text_features.t()
-                loss +=self.metric(logits,label)
+                loss += self.metric(logits,label).detach()
 
-        epoch_min_loss = None
-        bext_idx_in_batch = -1
+        epoch_min_loss = float('inf')
+        best_idx_in_batch = -1
+        processed_loss = [] # Will hold float values
+
         if self.parallel:
-            loss = [x/len(self.train_data) for x in loss]
-            epoch_min_loss = min(loss)
-            best_idx_in_batch = loss.index(epoch_min_loss)
+            # Normalize and convert to float
+            processed_loss = [(l / len(self.train_data)).item() for l in loss]
+            if processed_loss: # Ensure list is not empty
+                epoch_min_loss = min(processed_loss)
+                best_idx_in_batch = processed_loss.index(epoch_min_loss)
         else:
-            loss /= len(self.train_data)
-            epoch_min_loss = loss if epoch_min_loss == None else min(loss,epoch_min_loss)
-            best_idx_in_batch = 0
-        self.loss.append(loss)
+            # Normalize and convert to float
+            processed_loss = (loss / len(self.train_data)).item()
+            epoch_min_loss = processed_loss
+            best_idx_in_batch = 0 # Only one prompt if not parallel
 
-        if self.min_loss is None or epoch_min_loss<self.min_loss:
+        # Store float loss values
+        self.loss.append(processed_loss) # Appends list or float
+
+        # --- Update best prompt based on minimum loss ---
+        if (self.min_loss is None or epoch_min_loss < self.min_loss) and best_idx_in_batch != -1:
             self.min_loss = epoch_min_loss
             if self.parallel:
-                index = loss.index(epoch_min_loss)
-                self.best_prompt_text = prompt_text[index]
-                self.best_prompt_image = prompt_image[index]
+                # Ensure current_prompt_* are lists and index exists
+                if isinstance(current_prompt_text, list) and len(current_prompt_text) > best_idx_in_batch:
+                    self.best_prompt_text = current_prompt_text[best_idx_in_batch].detach().clone()
+                if isinstance(current_prompt_image, list) and len(current_prompt_image) > best_idx_in_batch:
+                    self.best_prompt_image = current_prompt_image[best_idx_in_batch].detach().clone()
             else:
-                self.best_prompt_text = prompt_text
-                self.best_prompt_image = prompt_image
+                # Ensure it's detached and cloned even in non-parallel case
+                self.best_prompt_text = current_prompt_text.detach().clone()
+                self.best_prompt_image = current_prompt_image.detach().clone()
+            print(f"*** New best loss found: {self.min_loss:.4f} (at call {self.num_call}) ***") # Optional: less frequent printing might be better
 
-        #num_call = self.num_call*self.popsize if self.parallel else self.num_call
 
 
         if self.num_call % self.test_every == 0:
             print(f"\n--- Testing at call {self.num_call} ---")
+            # Test clean accuracy
             acc_clean = self.test(attack_config=None)
-            self.acc.append(acc_clean.item())
+            self.acc.append(acc_clean.item()) # Store clean accuracy
             self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
             print(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
-            
-            acc_attacked = torch.tensor(0.0)
+
+            # Test PGD accuracy if enabled
+            acc_attacked = torch.tensor(0.0) # Default to 0 if not enabled
             if self.pgd_config["enabled"] and self.best_prompt_text is not None:
-                            acc_attacked = self.test(attack_config=self.pgd_config)
-                            self.acc_pgd.append(acc_attacked.item())
-                            self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
-                            print(f"PGD Accuracy  : {acc_attacked:.4f} (Best PGD  : {self.best_accuracy_pgd:.4f})")
+                acc_attacked = self.test(attack_config=self.pgd_config)
+                self.acc_pgd.append(acc_attacked.item()) # Store PGD accuracy
+                self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
+                print(f"PGD Accuracy  : {acc_attacked:.4f} (Best PGD  : {self.best_accuracy_pgd:.4f})")
             elif self.pgd_config["enabled"]:
-                print("PGD Accuracy  : Skipped (no best prompt yet or PGD disabled)")
+                 print("PGD Accuracy  : Skipped (no best prompt yet or PGD disabled)")
+
+
             #---------------save_results-----------------------------------
             output_dir = os.path.join(self.output_dir,self.task_name)
-            
+
             fname = "{}_{}_{}.pth".format(self.task_name, self.opt_name, self.backbone.replace("/","-"))
-            # fname = "{}_intrinsic_{}.pth".format(self.task_name, self.intrinsic_dim_L)
 
             content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
                        "best_accuracy":self.best_accuracy, "acc":self.acc,
-                       "best_accuracy_pgd": self.best_accuracy_pgd, "acc_pgd": self.acc_pgd,
+                       "best_accuracy_pgd": self.best_accuracy_pgd, "acc_pgd": self.acc_pgd, # Save PGD results
                        "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
                        "loss":self.loss,"num_call":self.num_call,
                        "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict(),
-                       "pgd_config": self.pgd_config}
+                       "pgd_config": self.pgd_config} # Save PGD config used
             Analysis_Util.save_results(content,output_dir,fname)
             # ---------------save_results-----------------------------------
-            #print("current loss: {}".format(self.min_loss))
-        return loss
+        return processed_loss
     def _pgd_attack(self, images, labels, text_features, image_prompt, config):
         """ Performs PGD attack """
         epsilon = config['epsilon']
         alpha = config['alpha']
         num_iter = config['num_iter']
 
+        # Start with random perturbation
         delta = torch.zeros_like(images, requires_grad=True, device=self.device)
         delta.data.uniform_(-epsilon, epsilon)
         delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images # Project to valid range
 
         for _ in range(num_iter):
+            # Need gradients for delta
             delta.requires_grad_(True)
             perturbed_image = images + delta
 
+            # Forward pass with perturbed image
+            # Ensure image_encoder and text_encoder are not in parallel mode for attack grad calculation
             temp_parallel = self.image_encoder.parallel
             self.image_encoder.parallel = False
             image_features = self.image_encoder(perturbed_image, image_prompt)
-            self.image_encoder.parallel = temp_parallel
+            self.image_encoder.parallel = temp_parallel # Restore state
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             logit_scale = self.logit_scale.exp()
             logits = logit_scale * image_features @ text_features.t()
 
+            # Calculate loss (CrossEntropy is typical for PGD)
             loss = F.cross_entropy(logits, labels)
 
+            # Backward pass to get gradients w.r.t. delta
             loss.backward()
 
+            # PGD step
             delta.data = delta.data + alpha * delta.grad.sign()
+            # Project delta to L-infinity ball
             delta.data = torch.clamp(delta.data, -epsilon, epsilon)
+            # Project perturbed image to valid range [0, 1] equivalent in normalized space
             delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images
+            # Zero gradients for next iteration
             delta.grad.zero_()
 
         # Return final perturbed image
         return (images + delta).detach()
+
+
     @torch.no_grad()
-    def test(self):
+    def test(self, attack_config=None):
+        """ Evaluate accuracy, optionally with PGD attack """
         if self.best_prompt_text is None or self.best_prompt_image is None:
             print("Warning: Trying to test without best prompts found yet. Returning 0 accuracy.")
             return torch.tensor(0.0)
-        correct = 0.
-        parallel = self.parallel
-        self.parallel=self.text_encoder.parallel = self.image_encoder.parallel = False
-        for batch in self.test_loader:
-            image,label = self.parse_batch(batch)
-            text_features = self.text_encoder(self.best_prompt_text)
-            image_features = self.image_encoder(image,self.best_prompt_image)
 
+        correct = 0.
+        total = 0.
+        # Ensure evaluation is done sequentially (no parallelism)
+        original_parallel_state = self.parallel
+        self.parallel = self.text_encoder.parallel = self.image_encoder.parallel = False
+
+        # Pre-compute text features using the best text prompt
+        text_features = self.text_encoder(self.best_prompt_text)
+        text_features = text_features / text_features.norm(dim=-1,keepdim=True)
+
+        desc = "Testing Clean"
+        if attack_config and attack_config.get("enabled", False):
+             desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
+
+        for batch in tqdm(self.test_loader, desc=desc, leave=False):
+            image,label = self.parse_batch(batch) # parse_batch handles device transfer
+            total += image.size(0)
+
+            eval_image = image # Default to clean image
+
+            # --- Apply PGD Attack if configured ---
+            if attack_config and attack_config.get("enabled", False):
+                 # Enable gradients for attack step ONLY
+                 with torch.enable_grad():
+                      eval_image = self._pgd_attack(image, label, text_features, self.best_prompt_image, attack_config)
+            # --- End PGD Attack ---
+
+            # Compute image features (always no_grad here)
+            image_features = self.image_encoder(eval_image, self.best_prompt_image)
             image_features = image_features / image_features.norm(dim=-1,keepdim=True)
-            text_features = text_features / text_features.norm(dim=-1,keepdim=True)
+
             logit_scale = self.logit_scale.exp()
             logits = logit_scale*image_features@text_features.t()
             prediction = logits.argmax(dim=-1)
             correct += (prediction == label).float().sum()
-        self.parallel=self.text_encoder.parallel = self.image_encoder.parallel = parallel
-        acc = correct/len(self.test_data)
-        #print("Best Prompt Embedding - Acc : "+str(acc))
+
+        # Restore original parallel state
+        self.parallel=self.text_encoder.parallel = self.image_encoder.parallel = original_parallel_state
+
+        acc = correct/total # Use total derived from batches
+        # print(f"Accuracy ({desc}): {acc:.4f}") # Optional: print here too
         return acc
+
 
     def load_dataset(self):
         if self.task_name == 'CIFAR100':
@@ -391,4 +459,3 @@ class PromptCLIP_Shallow:
         if self.parallel:
             image = image.repeat(self.popsize, 1, 1, 1)
         return image, label
-
