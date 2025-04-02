@@ -9,7 +9,7 @@ from algorithm.LMMAES import Shallow_LMMAES
 from model.Shallow_Prompt_CLIP import PromptCLIP_Shallow
 import numpy as np
 import time
-
+import os #
 __classification__ = ["CIFAR100","CIFAR10","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
