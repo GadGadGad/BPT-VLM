@@ -9,6 +9,7 @@ from dataset.cifar10 import load_train_cifar10, load_test_cifar10
 from model.shallow_encoder import TextEncoder,VisionEncoder
 from model.analysis_utils import Analysis_Util
 from dataset.general import load_train,load_test
+from tqdm import tqdm
 class PromptCLIP_Shallow:
     def __init__(self,task_name,cfg):
         self.task_name = task_name
@@ -166,12 +167,10 @@ class PromptCLIP_Shallow:
         current_prompt_image = None # Store the image prompt associated with min loss in this batch
 
         if self.parallel:
-            loss = [torch.tensor(0.0, device=self.device) for _ in range(self.popsize)]
+            loss = [0]*self.popsize
             text_features = self.text_encoder(prompt_text) # if parallel, text_features.shape = [n_cls * popsize, *, *]
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             # Store prompts now in case we need them later for best_prompt update
-            if not isinstance(prompt_text, list): prompt_text = [prompt_text] # Should already be list
-            if not isinstance(prompt_image, list): prompt_image = [prompt_image] # Should already be list
             current_prompt_text = prompt_text
             current_prompt_image = prompt_image
         else:
@@ -180,64 +179,51 @@ class PromptCLIP_Shallow:
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             current_prompt_text = prompt_text
             current_prompt_image = prompt_image
-            loss = torch.tensor(0.0, device=self.device)
+
 
         for batch in self.train_loader:
             image,label = self.parse_batch(batch) # image shape [B*pop, C, H, W] if parallel else [B, C, H, W]
-            # IMPORTANT: Pass the correct prompt structure to image_encoder
-            # If parallel, prompt_image is already a list. If sequential, it's a tensor.
-            img_enc_prompt = prompt_image if self.parallel else prompt_image
-            image_features = self.image_encoder(image, img_enc_prompt) # prompt_image is list if parallel, tensor otherwise
+            image_features = self.image_encoder(image,prompt_image) # prompt_image is list if parallel, tensor otherwise
             image_features = image_features / image_features.norm(dim=-1,keepdim=True) # shape [B*pop, D] or [B, D]
             logit_scale = self.logit_scale.exp()
-
             if self.parallel:
                 B = int(image_features.shape[0]/self.popsize) # Original batch size
                 pop_img_features = image_features.view(self.popsize, B, -1) # [pop, B, D]
                 pop_txt_features = text_features.view(self.popsize, self.n_cls, -1) # [pop, n_cls, D]
 
                 for i in range(self.popsize):
+                    # tmp_text_features = text_features[i*self.n_cls:(i+1)*self.n_cls] # shape [n_cls, D]
+                    # tmp_image_features = image_features[i*B:(i+1)*B] # shape [B, D]
                     tmp_logits = logit_scale * pop_img_features[i] @ pop_txt_features[i].t() # [B, n_cls]
-                    # Use .detach() to prevent graph accumulation if metric involves ops not under no_grad
-                    loss[i] += self.metric(tmp_logits, label).detach() # label shape [B]
+                    loss[i]+=self.metric(tmp_logits,label) # label shape [B]
             else:
                 logits = logit_scale*image_features@text_features.t()
-                loss += self.metric(logits,label).detach()
+                loss +=self.metric(logits,label)
 
         epoch_min_loss = float('inf')
         best_idx_in_batch = -1
-        processed_loss = [] # Will hold float values
 
         if self.parallel:
-            # Normalize and convert to float
-            processed_loss = [(l / len(self.train_data)).item() for l in loss]
-            if processed_loss: # Ensure list is not empty
-                epoch_min_loss = min(processed_loss)
-                best_idx_in_batch = processed_loss.index(epoch_min_loss)
+            loss = [x/len(self.train_data) for x in loss]
+            epoch_min_loss = min(loss)
+            best_idx_in_batch = loss.index(epoch_min_loss)
         else:
-            # Normalize and convert to float
-            processed_loss = (loss / len(self.train_data)).item()
-            epoch_min_loss = processed_loss
+            loss /= len(self.train_data)
+            epoch_min_loss = loss
             best_idx_in_batch = 0 # Only one prompt if not parallel
+        self.loss.append(loss) # Appends list if parallel, float otherwise
 
-        # Store float loss values
-        self.loss.append(processed_loss) # Appends list or float
-
-        # --- Update best prompt based on minimum loss ---
-        if (self.min_loss is None or epoch_min_loss < self.min_loss) and best_idx_in_batch != -1:
+        if self.min_loss is None or epoch_min_loss < self.min_loss:
             self.min_loss = epoch_min_loss
+            # Update best prompts based on the index found
             if self.parallel:
-                # Ensure current_prompt_* are lists and index exists
-                if isinstance(current_prompt_text, list) and len(current_prompt_text) > best_idx_in_batch:
-                    self.best_prompt_text = current_prompt_text[best_idx_in_batch].detach().clone()
-                if isinstance(current_prompt_image, list) and len(current_prompt_image) > best_idx_in_batch:
-                    self.best_prompt_image = current_prompt_image[best_idx_in_batch].detach().clone()
+                self.best_prompt_text = current_prompt_text[best_idx_in_batch].detach().clone()
+                self.best_prompt_image = current_prompt_image[best_idx_in_batch].detach().clone()
             else:
                 # Ensure it's detached and cloned even in non-parallel case
                 self.best_prompt_text = current_prompt_text.detach().clone()
                 self.best_prompt_image = current_prompt_image.detach().clone()
-            print(f"*** New best loss found: {self.min_loss:.4f} (at call {self.num_call}) ***") # Optional: less frequent printing might be better
-
+            print(f"*** New best loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
 
 
         if self.num_call % self.test_every == 0:
@@ -273,7 +259,8 @@ class PromptCLIP_Shallow:
                        "pgd_config": self.pgd_config} # Save PGD config used
             Analysis_Util.save_results(content,output_dir,fname)
             # ---------------save_results-----------------------------------
-        return processed_loss
+        return loss
+
     def _pgd_attack(self, images, labels, text_features, image_prompt, config):
         """ Performs PGD attack """
         epsilon = config['epsilon']
