@@ -396,13 +396,15 @@ class PromptCLIP_Shallow:
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
             # -------------------------------
 
-            loss.backward() # Calculate gradients w.r.t. delta
-
-            if delta.grad is None:
-                print("Warning: delta.grad is None during PGD attack. Stopping attack for this batch.")
-                # Return the image perturbed up to the previous step, or original if first step
+            delta_grad = torch.autograd.grad(loss, delta,
+                                             only_inputs=True, # Ensure only delta grad is computed
+                                             retain_graph=False, # Don't need to retain graph after this
+                                             create_graph=False # Don't need graph for delta_grad itself
+                                             )[0] # autograd.grad returns a tuple
+            if delta_grad is None:
+                print(f"Warning: delta_grad is None during PGD attack iter {i}. Stopping attack for this batch.")
+                # Return the image perturbed up to the previous step
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
-
 
             grad_sign = delta.grad.sign()
             delta.data = delta.data + alpha * grad_sign.to(delta.dtype)
@@ -415,7 +417,6 @@ class PromptCLIP_Shallow:
 
         # Return final perturbed image, detached and clamped
         return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
-
 
     # test method remains largely the same - it uses the TEST pgd_config
     @torch.no_grad()
