@@ -413,7 +413,7 @@ class PromptCLIP_Shallow:
             # Project perturbed image to valid input space range
             delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images
             # Zero gradients for next iteration
-            delta.grad.zero_()
+            # delta.grad.zero_()
 
         # Return final perturbed image, detached and clamped
         return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
