@@ -6,7 +6,7 @@ from algorithm.CMA_ES import shallow_cma
 from algorithm.LM_CMA_ES import Shallow_LMCMAES
 from algorithm.MMES import Shallow_MMES
 from algorithm.LMMAES import Shallow_LMMAES
-from model.Shallow_Prompt_CLIP import PromptCLIP_Shallow
+from model.Shallow_Prompt_CLIP_PGD import PromptCLIP_Shallow
 import numpy as np
 import time
 import os #
