@@ -50,6 +50,7 @@ class PromptCLIP_Shallow:
         self.best_prompt_text = None
         self.best_prompt_image = None
         self.best_accuracy = 0
+        self.best_accuracy_pgd = 0
         self.min_loss = None
         self.loss = []
         self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize
