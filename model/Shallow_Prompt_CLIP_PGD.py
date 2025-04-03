@@ -28,6 +28,7 @@ class PromptCLIP_Shallow:
         self.load_dataset()
         self.loss = []
         self.acc = []
+        self.acc_pgd = [] 
         # Text Encoder
         self.n_prompt_tokens_L = cfg["n_prompt_tokens_L"]
         self.intrinsic_dim_L = cfg["intrinsic_dim_L"]
