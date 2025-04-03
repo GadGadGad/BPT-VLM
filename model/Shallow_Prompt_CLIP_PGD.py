@@ -406,7 +406,7 @@ class PromptCLIP_Shallow:
                 # Return the image perturbed up to the previous step
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
 
-            grad_sign = delta.grad.sign()
+            grad_sign = delta_grad.sign()
             delta.data = delta.data + alpha * grad_sign.to(delta.dtype)
             # Project delta to L-infinity ball
             delta.data = torch.clamp(delta.data, -epsilon, epsilon)
