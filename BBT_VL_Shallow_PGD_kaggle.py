@@ -81,7 +81,7 @@ def fitness_eval(prompt_zip_np):
     # Set parallel to False temporarily for single eval call consistency
     original_parallel = prompt_clip.parallel
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
-    fitness = prompt_clip.eval(list(zip(prompt_text_list, prompt_image_list))[0]).item() # Pass the single tuple
+    fit_value = prompt_clip.eval(list(zip(prompt_text_list, prompt_image_list))[0]).item() # Pass the single tuple
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = original_parallel # Restore
 
     # Logging (similar to original, adjust if needed)
@@ -93,7 +93,7 @@ def fitness_eval(prompt_zip_np):
         if prompt_clip.pgd_config.get("enabled", False):
             print("Best Prompt Embedding - PGD Acc : {:.4f}".format(prompt_clip.best_accuracy_pgd))
 
-    return fitness # Return single fitness value
+    return fit_value.item() if isinstance(fit_value, torch.Tensor) else fit_value
 
 
 # --- Optimization Setup ---
@@ -227,7 +227,7 @@ else:
 
 # --- Save final results one last time (optional, as it saves periodically) ---
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
-fname = "{}_{}_{}_final.pth".format(args.task_name, cfg["opt_name"], cfg["backbone"].replace("/", "-"))
+# fname = "{}_{}_{}_final.pth".format(args.task_name, cfg["opt_name"], cfg["backbone"].replace("/", "-"))
 content = {
     "task_name": args.task_name, "opt_name": cfg["opt_name"], "backbone": cfg["backbone"],
     "best_accuracy": prompt_clip.best_accuracy, "acc": prompt_clip.acc,
@@ -236,10 +236,18 @@ content = {
     "loss": prompt_clip.loss, "num_call": prompt_clip.num_call,
     "final_acc_clean": final_acc_clean.item(), # Store final scalar value
     "final_acc_pgd": final_acc_pgd.item() if prompt_clip.pgd_config["enabled"] else None, # Store final scalar value
-    "Linear_L": prompt_clip.linear_L.state_dict(), "Linear_V": prompt_clip.linear_V.state_dict(),
-    "pgd_config": prompt_clip.pgd_config,
+    "Linear_L": prompt_clip.linear_L.state_dict(),
+    "Linear_V": prompt_clip.linear_V.state_dict(),
+    "pgd_config_test": prompt_clip.pgd_config,
+    "adv_train_config": prompt_clip.adv_train_config, 
     "optimization_time_seconds": end_time - start_time
 }
+fname = "{}_{}_{}_advOpt{}_final.pth".format(
+    args.task_name,
+    cfg["opt_name"],
+    cfg["backbone"].replace("/", "-"),
+    prompt_clip.adv_train_config["enabled"] # True or False
+)
 Analysis_Util.save_results(content, output_dir, fname)
 print(f"Final results saved to {os.path.join(output_dir, fname)}")
 
