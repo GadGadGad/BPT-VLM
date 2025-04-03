@@ -271,12 +271,13 @@ class PromptCLIP_Shallow:
         delta = torch.zeros_like(images, requires_grad=True, device=self.device)
         delta.data.uniform_(-epsilon, epsilon)
         delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images # Project to valid range
-
+        delta.data = delta.data.to(images.dtype)
+        
         for _ in range(num_iter):
             # Need gradients for delta
             delta.requires_grad_(True)
             perturbed_image = images + delta
-
+            perturbed_image = perturbed_image.to(self.dtype)
             # Forward pass with perturbed image
             # Ensure image_encoder and text_encoder are not in parallel mode for attack grad calculation
             temp_parallel = self.image_encoder.parallel
@@ -295,7 +296,8 @@ class PromptCLIP_Shallow:
             loss.backward()
 
             # PGD step
-            delta.data = delta.data + alpha * delta.grad.sign()
+            grad_sign = delta.grad.sign()
+            delta.data = delta.data + alpha * grad_sign.to(delta.dtype)
             # Project delta to L-infinity ball
             delta.data = torch.clamp(delta.data, -epsilon, epsilon)
             # Project perturbed image to valid range [0, 1] equivalent in normalized space
@@ -304,7 +306,7 @@ class PromptCLIP_Shallow:
             delta.grad.zero_()
 
         # Return final perturbed image
-        return (images + delta).detach()
+        return (images + delta).detach().to(self.dtype)
 
 
     @torch.no_grad()
