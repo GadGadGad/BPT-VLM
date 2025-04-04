@@ -8,7 +8,7 @@ pgd:
   epsilon: 0.031 # 8/255, common value for L-infinity norm, assuming normalized images
   alpha: 0.007   # 2/255, step size
   num_iter: 10   # Number of PGD iterations
-  enabled: False  # Set to False to disable PGD testing
+  enabled: True  # Set to False to disable PGD testing
 adv_train:
   epsilon: 0.031 # 8/255, common value for L-infinity norm, assuming normalized images
   alpha: 0.007   # 2/255, step size
