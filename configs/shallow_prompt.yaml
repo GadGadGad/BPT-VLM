@@ -7,12 +7,12 @@ intrinsic_dim_V: 50
 pgd:
   epsilon: 0.031 # 8/255, common value for L-infinity norm, assuming normalized images
   alpha: 0.007   # 2/255, step size
-  num_iter: 10   # Number of PGD iterations
+  num_iter: 3   # Number of PGD iterations
   enabled: True  # Set to False to disable PGD testing
 adv_train:
   epsilon: 0.031 # 8/255, common value for L-infinity norm, assuming normalized images
   alpha: 0.007   # 2/255, step size
-  num_iter: 10   # Number of PGD iterations
+  num_iter: 3   # Number of PGD iterations
   enabled: False  # Set to False to disable PGD testing
 sigma: 1
 k_shot: 16
@@ -58,9 +58,9 @@ ImageNet:
   test_every: 60
 
 CIFAR100:
-  budget: 3600
+  budget: 25200
   test_every: 12
 
 CIFAR10:
-  budget: 3600
+  budget: 25200
   test_every: 12
