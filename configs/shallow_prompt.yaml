@@ -2,18 +2,18 @@ backbone: "ViT-B/32"
 n_prompt_tokens_L: 8
 n_prompt_tokens_V: 5
 loss_type: "ce"
-intrinsic_dim_L: 50
-intrinsic_dim_V: 50
+intrinsic_dim_L: 100
+intrinsic_dim_V: 100
 pgd:
-  epsilon: 0.031 # 8/255, common value for L-infinity norm, assuming normalized images
-  alpha: 0.007   # 2/255, step size
-  num_iter: 3   # Number of PGD iterations
-  enabled: True  # Set to False to disable PGD testing
+  epsilon: 0.031 
+  alpha: 0.007  
+  num_iter: 3  
+  enabled: True 
 adv_train:
-  epsilon: 0.031 # 8/255, common value for L-infinity norm, assuming normalized images
-  alpha: 0.007   # 2/255, step size
-  num_iter: 3   # Number of PGD iterations
-  enabled: False  # Set to False to disable PGD testing
+  epsilon: 0.031 
+  alpha: 0.007  
+  num_iter: 3  
+  enabled: False 
 sigma: 1
 k_shot: 16
 seed: 42
