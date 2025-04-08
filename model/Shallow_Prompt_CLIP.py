@@ -310,8 +310,6 @@ class PromptCLIP_Shallow:
             self.n_cls = len(self.classes)
 
 
-
-
     def parse_batch(self,batch):
         image = batch["image"]
         label = batch["label"]

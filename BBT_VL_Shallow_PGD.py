@@ -10,6 +10,7 @@ from model.Shallow_Prompt_CLIP_PGD import PromptCLIP_Shallow
 import numpy as np
 import time
 import os #
+from model.analysis_utils import Analysis_Util
 __classification__ = ["CIFAR100","CIFAR10","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
@@ -27,14 +28,12 @@ parser.add_argument("--backbone", default="ViT-B/32", type=str)
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
-# --- Load Config ---
 config_path = "./configs/shallow_prompt.yaml"
 if not os.path.exists(config_path):
     raise FileNotFoundError(f"Config file not found at {config_path}")
 with open(config_path, 'r') as f:
     cfg = yaml.load(f, Loader=yaml.FullLoader)
 
-# --- Override Config with Args and Defaults ---
 cfg["opt_name"] = args.opt
 cfg["data_dir"] = __dataset__
 cfg["output_dir"] = __output__
@@ -66,17 +65,13 @@ else:
 # --- Fitness Function Definition (for specific optimizers like LM-CMA-ES) ---
 # This function evaluates a *single* individual solution.
 def fitness_eval(prompt_zip_np):
-    # Convert numpy array back to the required format (split L and V)
-    # This function is primarily for optimizers expecting a single evaluation function.
-    # The main loop below handles batch evaluation more efficiently for CMA-ES variants.
     prompt_zip_np = np.array(prompt_zip_np) # Ensure it's numpy
     prompt_text_intrinsic = prompt_zip_np[:intrinsic_dim_L]
     prompt_image_intrinsic = prompt_zip_np[intrinsic_dim_L:]
 
     # Generate prompts (needs to be done for a single individual here)
-    prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic]) # List with one element
-    prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic]) # List with one element
-
+    prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic])
+    prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic]) 
     # Evaluate the single prompt pair
     # Set parallel to False temporarily for single eval call consistency
     original_parallel = prompt_clip.parallel
@@ -96,7 +91,6 @@ def fitness_eval(prompt_zip_np):
     return fitness # Return single fitness value
 
 
-# --- Optimization Setup ---
 ndim_problem = intrinsic_dim_L + intrinsic_dim_V
 pro = {'fitness_function': fitness_eval, 'ndim_problem': ndim_problem}
 
@@ -113,7 +107,6 @@ opt_cfg = {
 }
 
 
-# --- Load Algorithm ---
 opt = None
 if args.opt == "shallow_cma":
     opt = shallow_cma(cfg) # Assumes shallow_cma takes the cfg dict
@@ -139,7 +132,6 @@ print(f"Parallel Evaluation during Search: {cfg['parallel']}")
 print(f"Device: {device}")
 
 
-# --- Black-box prompt tuning ---
 start_time = time.time()
 
 if args.opt in __pypop__:
@@ -153,7 +145,6 @@ if args.opt in __pypop__:
         res = opt.optimize()
         print("Optimization Result (PyPop):", res)
     else:
-        # Handle non-classification tasks if needed
         print(f"Warning: PyPop optimizer path not fully defined for task {args.task_name}")
         # image_context = prompt_clip.get_image_information()
         # prompt_clip.image_encoder.set_context(image_context)
@@ -199,8 +190,8 @@ else: # Handle custom CMA-ES loop (like original shallow_cma might have)
             opt.tell(solutions, fitnesses)
 
             # Optional: Print progress summary less frequently than test_every
-            # if prompt_clip.num_call % (cfg["popsize"] * 5) == 0: # Every 5 generations approx
-            #      print(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Min Loss: {prompt_clip.min_loss:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}")
+            if prompt_clip.num_call % (cfg["popsize"] * 5) == 0: # Every 5 generations approx
+                 print(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Min Loss: {prompt_clip.min_loss:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}")
 
     else:
         # Handle non-classification tasks if needed
@@ -209,7 +200,6 @@ else: # Handle custom CMA-ES loop (like original shallow_cma might have)
         # prompt_clip.image_encoder.set_context(image_context)
         # ... (similar loop structure) ...
 
-# --- Final Evaluation ---
 print("\n--- Optimization Finished ---")
 end_time = time.time()
 print(f"Total Optimization Time: {end_time - start_time:.2f} seconds")
@@ -225,7 +215,6 @@ if prompt_clip.pgd_config["enabled"]:
 else:
     print("Final PGD Accuracy  : Skipped (PGD not enabled in config)")
 
-# --- Save final results one last time (optional, as it saves periodically) ---
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 fname = "{}_{}_{}_final.pth".format(args.task_name, cfg["opt_name"], cfg["backbone"].replace("/", "-"))
 content = {
@@ -244,5 +233,3 @@ Analysis_Util.save_results(content, output_dir, fname)
 print(f"Final results saved to {os.path.join(output_dir, fname)}")
 
 print("--- Run Complete ---")
-
-# --- END OF FILE BBT_VL_Shallow.py ---

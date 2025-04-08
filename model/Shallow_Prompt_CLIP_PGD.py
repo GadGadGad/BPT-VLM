@@ -4,7 +4,6 @@ from torch.nn import functional as F
 import numpy as np
 import clip
 from torchvision.datasets import CIFAR100, CIFAR10
-# Assuming these imports are correct for your project structure
 from dataset.cifar100 import load_train_cifar100, load_test_cifar100
 from dataset.cifar10 import load_train_cifar10, load_test_cifar10
 from model.shallow_encoder import TextEncoder,VisionEncoder
@@ -333,12 +332,12 @@ class PromptCLIP_Shallow:
             output_dir = os.path.join(self.output_dir,self.task_name)
             fname = "{}_{}_{}_advOpt{}.pth".format(
                 self.task_name, self.opt_name, self.backbone.replace("/","-"),
-                self.adv_train_config["enabled"] # Add flag to filename
+                self.adv_train_config["enabled"] 
             )
 
             content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
                        "best_accuracy":self.best_accuracy, "acc":self.acc,
-                       "best_accuracy_pgd": self.best_accuracy_pgd, "acc_pgd": self.acc_pgd, # Save PGD results
+                       "best_accuracy_pgd": self.best_accuracy_pgd, "acc_pgd": self.acc_pgd,
                        "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
                        "loss":self.loss,"num_call":self.num_call,
                        "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict(),
@@ -353,10 +352,8 @@ class PromptCLIP_Shallow:
 
     def _pgd_attack(self, images, labels, text_features, image_prompt, config):
         """ Performs PGD attack - NO CHANGES NEEDED HERE conceptually, but ensure inputs are correct """
-        # Ensure images require grad only if they don't already (e.g., first iter)
-        # Make a clone to avoid modifying original images if they are used elsewhere
         images = images.clone().detach()
-        labels = labels.clone().detach() # Ensure labels are detached
+        labels = labels.clone().detach() 
 
         epsilon = config['epsilon']
         alpha = config['alpha']
@@ -373,13 +370,10 @@ class PromptCLIP_Shallow:
             delta.requires_grad_(True)
             perturbed_image = (images + delta).to(self.dtype) # Ensure dtype for encoder
 
-            # --- Forward pass for attack gradient ---
-            # Temporarily disable parallel in image encoder if it's enabled globally
-            # This is crucial because we're attacking for a *specific* prompt here.
+
             original_im_parallel = self.image_encoder.parallel
             self.image_encoder.parallel = False
-            # Need to handle potential list of prompts if called from parallel eval
-            # No, image_prompt passed here is already the specific one for this attack instance
+
             image_features = self.image_encoder(perturbed_image, image_prompt)
             self.image_encoder.parallel = original_im_parallel # Restore state
 
@@ -389,7 +383,6 @@ class PromptCLIP_Shallow:
 
             loss = F.cross_entropy(logits, labels)
 
-            # --- Check for NaNs in loss ---
             if torch.isnan(loss):
                 print("Warning: NaN loss detected during PGD attack. Stopping attack for this batch.")
                 # Return the image perturbed up to the previous step, or original if first step
@@ -408,9 +401,7 @@ class PromptCLIP_Shallow:
 
             grad_sign = delta_grad.sign()
             delta.data = delta.data + alpha * grad_sign.to(delta.dtype)
-            # Project delta to L-infinity ball
             delta.data = torch.clamp(delta.data, -epsilon, epsilon)
-            # Project perturbed image to valid input space range
             delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images
             # Zero gradients for next iteration
             # delta.grad.zero_()
@@ -450,16 +441,13 @@ class PromptCLIP_Shallow:
 
             eval_image = image.to(self.dtype) # Default to clean image, ensure dtype
 
-            # --- Apply PGD Attack if configured for this test run ---
             if is_attack_test:
                  # Enable gradients for attack step ONLY
-                 with torch.enable_grad():
-                      # Use the passed attack_config (e.g., self.pgd_config)
-                      eval_image = self._pgd_attack(image, label, text_features, self.best_prompt_image, attack_config)
-                 eval_image = eval_image.to(self.dtype) # Ensure dtype after attack
-            # --- End PGD Attack ---
+                with torch.enable_grad():
+                    # Use the passed attack_config (e.g., self.pgd_config)
+                    eval_image = self._pgd_attack(image, label, text_features, self.best_prompt_image, attack_config)
+                eval_image = eval_image.to(self.dtype) # Ensure dtype after attack
 
-            # Compute image features (always no_grad here)
             image_features = self.image_encoder(eval_image, self.best_prompt_image)
             image_features = image_features / image_features.norm(dim=-1,keepdim=True)
 
@@ -470,17 +458,15 @@ class PromptCLIP_Shallow:
 
         # Restore original parallel state
         self.parallel = original_parallel_state
-        # We might need to restore encoder parallel states if they were different
         self.text_encoder.parallel = original_parallel_state
         self.image_encoder.parallel = original_parallel_state
 
 
-        acc = correct/total # Use total derived from batches
+        acc = correct/total 
         return acc
 
 
     def load_dataset(self):
-        # (No changes needed here)
         if self.task_name == 'CIFAR100':
             self.dataset = CIFAR100(self.data_dir, transform=self.preprocess, download=True)
             self.classes = self.dataset.classes

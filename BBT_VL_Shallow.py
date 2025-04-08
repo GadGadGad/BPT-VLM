@@ -9,6 +9,7 @@ from algorithm.LMMAES import Shallow_LMMAES
 from model.Shallow_Prompt_CLIP import PromptCLIP_Shallow
 import numpy as np
 import time
+from model.analysis_utils import Analysis_Util
 
 __classification__ = ["CIFAR100","CIFAR10","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]

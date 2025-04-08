@@ -4,6 +4,7 @@ import yaml
 from tqdm import tqdm
 from algorithm.CMA_ES import shallow_cma,deep_cma
 from model.Deep_Prompt_CLIP import PromptCLIP_Deep
+from model.analysis_utils import Analysis_Util
 
 __classification__ = ["CIFAR100","CIFAR10","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
