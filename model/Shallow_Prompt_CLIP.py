@@ -208,7 +208,7 @@ class PromptCLIP_Shallow:
                        "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict()}
             Analysis_Util.save_results(content,output_dir,fname)
             # ---------------save_results-----------------------------------
-            #print("current loss: {}".format(self.min_loss))
+            print("current loss: {}".format(self.min_loss))
         return loss
 
     @torch.no_grad()

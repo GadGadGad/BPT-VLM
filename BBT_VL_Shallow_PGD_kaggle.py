@@ -218,7 +218,6 @@ if prompt_clip.pgd_config["enabled"]:
 else:
     print("Final PGD Accuracy  : Skipped (PGD not enabled in config)")
 
-# --- Save final results one last time (optional, as it saves periodically) ---
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 # fname = "{}_{}_{}_final.pth".format(args.task_name, cfg["opt_name"], cfg["backbone"].replace("/", "-"))
 content = {
@@ -227,8 +226,8 @@ content = {
     "best_accuracy_pgd": prompt_clip.best_accuracy_pgd, "acc_pgd": prompt_clip.acc_pgd,
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
     "loss": prompt_clip.loss, "num_call": prompt_clip.num_call,
-    "final_acc_clean": final_acc_clean.item(), # Store final scalar value
-    "final_acc_pgd": final_acc_pgd.item() if prompt_clip.pgd_config["enabled"] else None, # Store final scalar value
+    "final_acc_clean": final_acc_clean.item(),
+    "final_acc_pgd": final_acc_pgd.item() if prompt_clip.pgd_config["enabled"] else None, 
     "Linear_L": prompt_clip.linear_L.state_dict(),
     "Linear_V": prompt_clip.linear_V.state_dict(),
     "pgd_config_test": prompt_clip.pgd_config,

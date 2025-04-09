@@ -31,13 +31,12 @@ class PromptCLIP_Shallow:
         self.acc = []
         self.acc_pgd = []
 
-        # --- Adversarial Training Configuration ---
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
         if self.adv_train_config["enabled"]:
             print("--- Adversarial Prompt Optimization ENABLED ---")
             if "epsilon" not in self.adv_train_config: self.adv_train_config["epsilon"] = 4/255
             if "alpha" not in self.adv_train_config: self.adv_train_config["alpha"] = 1/255
-            if "num_iter" not in self.adv_train_config: self.adv_train_config["num_iter"] = 5 # Fewer steps for training speed
+            if "num_iter" not in self.adv_train_config: self.adv_train_config["num_iter"] = 5
             print(f"  Training PGD Config: Epsilon={self.adv_train_config['epsilon']}, Alpha={self.adv_train_config['alpha']}, Iter={self.adv_train_config['num_iter']}")
         else:
             print("--- Standard (Clean) Prompt Optimization ---")
@@ -95,7 +94,6 @@ class PromptCLIP_Shallow:
 
         self.pgd_config = cfg.get("pgd", {"enabled": False}) # Get PGD config for TESTING
         if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
-             # Need normalization stats if either training or testing uses PGD
             print("PGD Attack Enabled (Testing or Training).")
             try:
                 mean = self.preprocess.transforms[-1].mean
@@ -108,11 +106,10 @@ class PromptCLIP_Shallow:
             except Exception as e:
                  print(f"Warning: Could not extract mean/std from preprocess for PGD clipping. PGD might not work correctly. Disabling PGD. Error: {e}")
                  self.pgd_config["enabled"] = False
-                 self.adv_train_config["enabled"] = False # Disable if we can't get stats
+                 self.adv_train_config["enabled"] = False 
 
 
     def get_text_information(self,caption=None):
-        # (No changes needed here)
         prompt_prefix = " ".join(["X"] * self.n_prompt_tokens_L)
         if caption is None:
             classnames = [name.replace("_", " ").replace("-"," ") for name in self.classes]
@@ -134,13 +131,11 @@ class PromptCLIP_Shallow:
         return context
 
     def get_image_information(self):
-        # (No changes needed here)
         context = {"n_prompt_tokens_V": self.n_prompt_tokens_V,
                    "batch_size": self.batch_size, "pop_size": self.popsize, "parallel": self.parallel}
         return context
 
     def generate_text_prompts(self,intrinsic_vectors):
-        # (No changes needed here)
         prompt_list = []
         for vector in intrinsic_vectors:
             z = torch.tensor(vector, device=self.device, dtype=self.dtype)
@@ -153,7 +148,6 @@ class PromptCLIP_Shallow:
         return prompt_list
 
     def generate_visual_prompts(self,intrinsic_vectors):
-        # (No changes needed here)
         visual_prompt_list = []
         for vector in intrinsic_vectors:
             z = torch.tensor(vector,device=self.device,dtype=self.dtype)
@@ -165,7 +159,6 @@ class PromptCLIP_Shallow:
         return visual_prompt_list
 
     def metric(self,logits,label):
-        # (No changes needed here)
         ce_loss = F.cross_entropy(logits, label, reduction='none')
         final_loss = 0
         if self.loss_type == "ce":
@@ -178,7 +171,6 @@ class PromptCLIP_Shallow:
         return final_loss
 
     # MODIFIED: eval now calculates loss potentially using adversarial examples
-    # Note: @torch.no_grad() is kept, but PGD attack itself will use torch.enable_grad()
     @torch.no_grad()
     def eval(self,prompt_zip):
         prompt_text_list, prompt_image_list = prompt_zip[0], prompt_zip[1] # These are lists if parallel, tensors otherwise
@@ -186,7 +178,6 @@ class PromptCLIP_Shallow:
         loss = 0
         logit_scale = self.logit_scale.exp()
 
-        # Pre-compute text features for all prompts in the population/batch
         if self.parallel:
             # text_features: [popsize * n_cls, D]
             text_features = self.text_encoder(prompt_text_list)
@@ -206,15 +197,13 @@ class PromptCLIP_Shallow:
         for batch in self.train_loader:
             # Get clean batch data
             clean_image, label = self.parse_batch(batch) # parse_batch handles device/dtype/repeat
-            # clean_image shape [B*pop, C, H, W] if parallel else [B, C, H, W]
-            # label shape [B] (original batch size)
+
 
             if self.parallel:
                 B = label.shape[0] # Original batch size
                 # Reshape clean images for easier slicing if needed: [popsize, B, C, H, W]
                 pop_clean_image = clean_image.view(self.popsize, B, *clean_image.shape[1:])
 
-                # --- Parallel Adversarial Attack & Loss Calculation ---
                 for i in range(self.popsize):
                     current_txt_features = pop_txt_features[i] # [n_cls, D]
                     current_img_prompt = prompt_image_list[i] # [n_prompt_tok_V, D_V]
@@ -230,28 +219,23 @@ class PromptCLIP_Shallow:
                                 labels=label,
                                 text_features=current_txt_features,
                                 image_prompt=current_img_prompt,
-                                config=self.adv_train_config # Use training PGD config
+                                config=self.adv_train_config
                             )
-                        # Ensure correct dtype after attack
                         eval_image_i = eval_image_i.to(self.dtype)
                     else:
-                        # Use clean images if adversarial training is disabled
                         eval_image_i = current_clean_images.to(self.dtype)
 
-                    # Compute image features (no grad needed here)
-                    # Need to run image_encoder non-parallel for single prompt eval
                     original_im_parallel = self.image_encoder.parallel
                     self.image_encoder.parallel = False
                     image_features_i = self.image_encoder(eval_image_i, current_img_prompt)
-                    self.image_encoder.parallel = original_im_parallel # Restore state
+                    self.image_encoder.parallel = original_im_parallel
 
                     image_features_i = image_features_i / image_features_i.norm(dim=-1, keepdim=True) # [B, D]
 
-                    # Calculate logits and loss for this population member
                     tmp_logits = logit_scale * image_features_i @ current_txt_features.t() # [B, n_cls]
-                    loss[i] += self.metric(tmp_logits, label).item() # Accumulate loss, ensure it's float
+                    loss[i] += self.metric(tmp_logits, label).item() 
 
-            else: # --- Non-Parallel Adversarial Attack & Loss Calculation ---
+            else:
                 current_clean_images = clean_image # [B, C, H, W]
 
                 # Determine image input
@@ -261,65 +245,57 @@ class PromptCLIP_Shallow:
                          eval_image = self._pgd_attack(
                             images=current_clean_images,
                             labels=label,
-                            text_features=text_features, # Already [n_cls, D]
-                            image_prompt=current_prompt_image, # Already [n_tok, D]
+                            text_features=text_features,
+                            image_prompt=current_prompt_image,
                             config=self.adv_train_config
                          )
                      eval_image = eval_image.to(self.dtype)
                 else:
                      eval_image = current_clean_images.to(self.dtype)
 
-                # Compute image features (no grad needed here)
                 image_features = self.image_encoder(eval_image, current_prompt_image)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True) # [B, D]
 
-                # Calculate logits and loss
                 logits = logit_scale * image_features @ text_features.t() # [B, n_cls]
                 loss += self.metric(logits, label).item() # Accumulate loss
 
-        # --- Loss Finalization & Best Prompt Update ---
         epoch_min_loss = float('inf')
         best_idx_in_batch = -1
 
         if self.parallel:
-            # Normalize loss by dataset size
             loss = [x / len(self.train_data) for x in loss]
             epoch_min_loss = min(loss)
             best_idx_in_batch = loss.index(epoch_min_loss)
-            # Store the prompts corresponding to the minimum loss in this parallel batch
+
             current_prompt_text = prompt_text_list[best_idx_in_batch]
             current_prompt_image = prompt_image_list[best_idx_in_batch]
         else:
             loss /= len(self.train_data)
             epoch_min_loss = loss
-            best_idx_in_batch = 0 # Only one prompt if not parallel
+            best_idx_in_batch = 0 
 
-        self.loss.append(loss) # Appends list if parallel, float otherwise
+        self.loss.append(loss) 
 
-        # Update best prompt based on minimum loss observed *so far*
         if self.min_loss is None or epoch_min_loss < self.min_loss:
             self.min_loss = epoch_min_loss
-            # Detach and clone the best prompts from the current evaluation
+            
             self.best_prompt_text = current_prompt_text.detach().clone()
             self.best_prompt_image = current_prompt_image.detach().clone()
             print(f"*** New best {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
 
 
-        # --- Periodic Testing ---
         if self.num_call % self.test_every == 0:
             print(f"\n--- Testing at call {self.num_call} (Prompts optimized with {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss) ---")
-            # Test clean accuracy
             acc_clean = self.test(attack_config=None)
             self.acc.append(acc_clean.item()) # Store clean accuracy
             self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
             print(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
 
-            # Test PGD accuracy if evaluation PGD is enabled
-            acc_attacked = torch.tensor(0.0) # Default to 0 if not enabled
+            
+            acc_attacked = torch.tensor(0.0) 
             if self.pgd_config["enabled"] and self.best_prompt_text is not None:
-                # Use the TEST pgd_config here
                 acc_attacked = self.test(attack_config=self.pgd_config)
-                self.acc_pgd.append(acc_attacked.item()) # Store PGD accuracy
+                self.acc_pgd.append(acc_attacked.item()) 
                 self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
                 print(f"PGD Accuracy (Test): {acc_attacked:.4f} (Best PGD  : {self.best_accuracy_pgd:.4f})")
             elif self.pgd_config["enabled"]:
@@ -341,12 +317,10 @@ class PromptCLIP_Shallow:
                        "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
                        "loss":self.loss,"num_call":self.num_call,
                        "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict(),
-                       "pgd_config_test": self.pgd_config, # Save TEST PGD config used
-                       "adv_train_config": self.adv_train_config} # Save ADV TRAIN config used
+                       "pgd_config_test": self.pgd_config, 
+                       "adv_train_config": self.adv_train_config}
             Analysis_Util.save_results(content,output_dir,fname)
-            # ---------------save_results-----------------------------------
 
-        # Return the loss (list if parallel, float otherwise) to the optimizer
         return loss
 
 
@@ -379,15 +353,12 @@ class PromptCLIP_Shallow:
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             logits = self.logit_scale.exp() * image_features @ text_features.t()
-            # --------------------------------------
 
             loss = F.cross_entropy(logits, labels)
 
             if torch.isnan(loss):
                 print("Warning: NaN loss detected during PGD attack. Stopping attack for this batch.")
-                # Return the image perturbed up to the previous step, or original if first step
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
-            # -------------------------------
 
             delta_grad = torch.autograd.grad(loss, delta,
                                              only_inputs=True, # Ensure only delta grad is computed
@@ -396,14 +367,12 @@ class PromptCLIP_Shallow:
                                              )[0] # autograd.grad returns a tuple
             if delta_grad is None:
                 print(f"Warning: delta_grad is None during PGD attack iter {i}. Stopping attack for this batch.")
-                # Return the image perturbed up to the previous step
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
 
             grad_sign = delta_grad.sign()
             delta.data = delta.data + alpha * grad_sign.to(delta.dtype)
             delta.data = torch.clamp(delta.data, -epsilon, epsilon)
             delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images
-            # Zero gradients for next iteration
             # delta.grad.zero_()
 
         # Return final perturbed image, detached and clamped
@@ -442,11 +411,9 @@ class PromptCLIP_Shallow:
             eval_image = image.to(self.dtype) # Default to clean image, ensure dtype
 
             if is_attack_test:
-                 # Enable gradients for attack step ONLY
                 with torch.enable_grad():
-                    # Use the passed attack_config (e.g., self.pgd_config)
                     eval_image = self._pgd_attack(image, label, text_features, self.best_prompt_image, attack_config)
-                eval_image = eval_image.to(self.dtype) # Ensure dtype after attack
+                eval_image = eval_image.to(self.dtype)
 
             image_features = self.image_encoder(eval_image, self.best_prompt_image)
             image_features = image_features / image_features.norm(dim=-1,keepdim=True)
@@ -456,7 +423,6 @@ class PromptCLIP_Shallow:
             prediction = logits.argmax(dim=-1)
             correct += (prediction == label).float().sum()
 
-        # Restore original parallel state
         self.parallel = original_parallel_state
         self.text_encoder.parallel = original_parallel_state
         self.image_encoder.parallel = original_parallel_state
