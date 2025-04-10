@@ -451,6 +451,7 @@ class PromptCLIP_Shallow:
             self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
             self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
             self.n_cls = len(self.classes)
+
         elif self.task_name == 'StanfordCars':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
                                                            root=self.data_dir,dataset_dir="Cars_Gen")
