@@ -96,12 +96,10 @@ class PGDAttackedCIFAR10(Dataset):
              warnings.warn(f"Placeholder ID found for {self.split} batch {batch_idx}. Skipping download.", UserWarning)
              return False
 
-        print(f"Downloading {zip_filename} (Batch {batch_idx}) using gdown...")
         try:
             gdown.download(id=file_id_or_url, output=target_path, quiet=True, fuzzy=True)
             if not os.path.exists(target_path):
                  raise IOError(f"gdown download completed but the output file '{target_path}' was not found.")
-            print(f"Download complete: {zip_filename}")
             return True
         except Exception as e:
              if os.path.exists(target_path):
@@ -406,7 +404,7 @@ class Cifar_FewshotDataset(Dataset):
 
             if train_shot_count[label]<self.shots:
                 tmp = self.all_train[index]
-                tmp_data = [self.prepocess(tmp[0]),tmp[1]]
+                tmp_data = [tmp[0],tmp[1]]
                 new_train_data.append(tmp_data)
                 train_shot_count[label] += 1
 

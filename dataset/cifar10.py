@@ -11,7 +11,7 @@ import argparse
 class Cifar_FewshotDataset(Dataset):
     def __init__(self, args):
         self.shots = args["shots"]
-        self.prepocess = args["preprocess"]
+        self.preprocess = args["preprocess"]
         self.all_train = CIFAR10(os.path.expanduser("../dataset"), transform=None,download=True,train=True)
         self.new_train_data = self.construct_few_shot_data()
         pass
@@ -37,7 +37,7 @@ class Cifar_FewshotDataset(Dataset):
             if train_shot_count[label]<self.shots:
                 tmp = self.all_train[index]
                 # convert img to compatible tensors
-                tmp_data = [self.prepocess(tmp[0]),tmp[1]]
+                tmp_data = [self.preprocess(tmp[0]),tmp[1]]
                 new_train_data.append(tmp_data)
                 train_shot_count[label] += 1
 
@@ -51,8 +51,8 @@ def load_train_cifar10(batch_size=1,shots=16,preprocess=None):
 
 class Cifar_TestDataset(Dataset):
     def __init__(self, args):
-        self.prepocess = args["preprocess"]
-        self.all_test = CIFAR10(os.path.expanduser("../dataset"), transform=self.prepocess,download=True,train=False)
+        self.preprocess = args["preprocess"]
+        self.all_test = CIFAR10(os.path.expanduser("../dataset"), transform=self.preprocess,download=True,train=False)
 
 
     def __len__(self):
