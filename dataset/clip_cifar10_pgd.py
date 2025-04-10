@@ -35,7 +35,8 @@ class PGDAttackedCIFAR10(Dataset):
                  num_batches: Optional[int] = None,
                  zip_dir: str = "./zip_files",
                  dataset_dir: str = "./extracted_files",
-                 download: bool = False):
+                 download: bool = False,
+                 device: str="gpu"):
 
         if split not in ["train", "test"]:
             raise ValueError("split must be 'train' or 'test'")
@@ -43,6 +44,7 @@ class PGDAttackedCIFAR10(Dataset):
         self.filename_prefix = "trainset" if self.split == "train" else "testset"
         self.num_classes = 10
         self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+        self.device = device
         max_available = len(GOOGLE_DRIVE_FILES.get(self.split, {}))
         if num_batches is None:
             self.num_batches = max_available
@@ -205,7 +207,7 @@ class PGDAttackedCIFAR10(Dataset):
 
         length = 0
         try:
-            data = torch.load(pt_path, map_location='cpu')
+            data = torch.load(pt_path, map_location=self.device)
             if 'images' not in data:
                  raise KeyError(f"Missing 'images' key in {pt_path}.")
             length = len(data['images'])
@@ -372,7 +374,7 @@ class Cifar_FewshotDataset(Dataset):
     def __init__(self, args):
         self.shots = args["shots"]
         self.all_train = PGDAttackedCIFAR10(split="train", download=True, num_batches=10)
-        self.all_train.cleanup(delete_zips=False)
+        self.all_train.cleanup(delete_zips=True)
         self.new_train_data = self.construct_few_shot_data()
         pass
 
@@ -411,7 +413,7 @@ def load_train_cifar10_pgd(batch_size=1,shots=16):
 class Cifar_TestDataset(Dataset):
     def __init__(self):
         self.all_test = PGDAttackedCIFAR10(split="test", download=True, num_batches=2)
-        self.all_test.cleanup(delete_zips=False)
+        self.all_test.cleanup(delete_zips=True)
 
     def __len__(self):
         return len(self.all_test)
