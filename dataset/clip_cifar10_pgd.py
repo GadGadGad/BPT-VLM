@@ -385,108 +385,98 @@ class Cifar_FewshotDataset(Dataset):
         return {"image": self.new_train_data[idx][0], "label": self.new_train_data[idx][1]}
 
       
-def construct_few_shot_data(self):
-    new_train_data = []
-    train_shot_count = {i: 0 for i in range(self.all_train.num_classes)}
-    needed_shots = self.shots * self.all_train.num_classes
-    collected_shots = 0
+    def construct_few_shot_data(self):
+        new_train_data = []
+        train_shot_count = {i: 0 for i in range(self.all_train.num_classes)}
+        needed_shots = self.shots * self.all_train.num_classes
+        collected_shots = 0
 
-    # Get batch lengths without loading full data repeatedly if possible
-    # (The current __len__ caches them after first run, which is good)
-    try:
-        _ = len(self.all_train) # Ensure lengths are cached
-    except Exception as e:
-        print(f"Error calculating initial length: {e}")
-        # Handle error appropriately, maybe try loading batches below anyway
-        pass
-
-    batch_indices = list(self.all_train._batch_lengths.keys())
-    np.random.shuffle(batch_indices) # Shuffle batch order
-
-    print(f"Constructing few-shot data ({self.shots} shots/class)...")
-    pbar = tqdm(batch_indices, desc="Processing batches for few-shot")
-    for batch_idx in pbar:
-        if collected_shots >= needed_shots:
-            break # Stop if we have enough samples
-
-        batch_data = None
         try:
-            # Find zip path for this batch_idx
-            zip_path = None
-            for zp, bi in self.all_train.batch_map:
-                if bi == batch_idx:
-                    zip_path = zp
-                    break
-            if zip_path is None: continue # Should not happen
-
-            # --- Simplified Load Logic (Adapt from _load_batch_and_get_item) ---
-            pt_filename = f'{self.all_train.filename_prefix}_{batch_idx}.pt'
-            pt_path = os.path.join(self.all_train.dataset_dir, pt_filename)
-
-            if not os.path.exists(pt_path):
-               # Ensure zip exists (download if needed)
-               if not os.path.exists(zip_path):
-                   if self.all_train.download:
-                       if not self.all_train._download_single_batch(batch_idx):
-                           print(f"Warning: Could not download zip for batch {batch_idx}")
-                           continue
-                   else:
-                       print(f"Warning: Zip file not found for batch {batch_idx}")
-                       continue
-               # Extract
-               try:
-                   with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                       zip_ref.extract(pt_filename, self.all_train.dataset_dir)
-               except Exception as e:
-                   print(f"Warning: Failed to extract {pt_filename}: {e}")
-                   continue # Skip this batch
-
-            # Load batch data to CPU RAM first
-            batch_data = torch.load(pt_path, map_location='cpu') # Force CPU load
-            # --- End Simplified Load ---
-
-            images = batch_data['images']
-            labels = batch_data['labels']
-
-            # Iterate through items *within this loaded batch*
-            indices_in_batch = list(range(len(images)))
-            np.random.shuffle(indices_in_batch) # Shuffle within batch
-
-            for local_idx in indices_in_batch:
-                label = labels[local_idx].item() # Get label as Python int
-                if train_shot_count[label] < self.shots:
-                    # Get data (move to target device if needed later, keep on CPU for now)
-                    img = images[local_idx]
-                    # Ensure label is a tensor if needed downstream, otherwise keep as int
-                    new_train_data.append([img, torch.tensor(label)]) # Or just label
-                    train_shot_count[label] += 1
-                    collected_shots += 1
-                    pbar.set_postfix({"Collected": collected_shots})
-                    if collected_shots >= needed_shots:
-                        break # Stop inner loop too
-
+            _ = len(self.all_train) 
         except Exception as e:
-            print(f"\nError processing batch {batch_idx} during few-shot construction: {e}")
-        finally:
-            # *** Crucial: Release memory ***
-            if batch_data is not None:
-                del batch_data
-                del images # Redundant if part of batch_data, but safe
-                del labels # Redundant if part of batch_data, but safe
-                torch.cuda.empty_cache() # If things were accidentally moved to GPU
-            # Clean up extracted .pt file immediately
-            self.all_train._cleanup_batch_pt_file(batch_idx)
+            print(f"Error calculating initial length: {e}")
+            pass
 
-        if collected_shots >= needed_shots:
-            break # Stop outer loop
+        batch_indices = list(self.all_train._batch_lengths.keys())
+        np.random.shuffle(batch_indices) # Shuffle batch order
 
-    # Optionally, delete the PGDAttackedCIFAR10 instance *after* construction
-    del self.all_train # Keep this line if you don't need all_train afterwards
+        print(f"Constructing few-shot data ({self.shots} shots/class)...")
+        pbar = tqdm(batch_indices, desc="Processing batches for few-shot")
+        for batch_idx in pbar:
+            if collected_shots >= needed_shots:
+                break # Stop if we have enough samples
 
-    if collected_shots < needed_shots:
-        warnings.warn(f"Could only collect {collected_shots}/{needed_shots} samples.", UserWarning)
+            batch_data = None
+            try:
+                # Find zip path for this batch_idx
+                zip_path = None
+                for zp, bi in self.all_train.batch_map:
+                    if bi == batch_idx:
+                        zip_path = zp
+                        break
+                if zip_path is None: continue # Should not happen
 
-    return new_train_data # List of [image_tensor, label_tensor_or_int]
+                # --- Simplified Load Logic (Adapt from _load_batch_and_get_item) ---
+                pt_filename = f'{self.all_train.filename_prefix}_{batch_idx}.pt'
+                pt_path = os.path.join(self.all_train.dataset_dir, pt_filename)
+
+                if not os.path.exists(pt_path):
+                # Ensure zip exists (download if needed)
+                if not os.path.exists(zip_path):
+                    if self.all_train.download:
+                        if not self.all_train._download_single_batch(batch_idx):
+                            print(f"Warning: Could not download zip for batch {batch_idx}")
+                            continue
+                    else:
+                        print(f"Warning: Zip file not found for batch {batch_idx}")
+                        continue
+                # Extract
+                try:
+                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                        zip_ref.extract(pt_filename, self.all_train.dataset_dir)
+                except Exception as e:
+                    print(f"Warning: Failed to extract {pt_filename}: {e}")
+                    continue # Skip this batch
+
+                batch_data = torch.load(pt_path, map_location='cpu') # Force CPU load
+
+                images = batch_data['images']
+                labels = batch_data['labels']
+
+                indices_in_batch = list(range(len(images)))
+                np.random.shuffle(indices_in_batch) 
+
+                for local_idx in indices_in_batch:
+                    label = labels[local_idx].item()
+                    if train_shot_count[label] < self.shots:
+                        img = images[local_idx]
+                        new_train_data.append([img, torch.tensor(label)]) 
+                        train_shot_count[label] += 1
+                        collected_shots += 1
+                        pbar.set_postfix({"Collected": collected_shots})
+                        if collected_shots >= needed_shots:
+                            break
+
+            except Exception as e:
+                print(f"\nError processing batch {batch_idx} during few-shot construction: {e}")
+            finally:
+                if batch_data is not None:
+                    del batch_data
+                    del images 
+                    del labels
+                    torch.cuda.empty_cache() 
+
+                self.all_train._cleanup_batch_pt_file(batch_idx)
+
+            if collected_shots >= needed_shots:
+                break # Stop outer loop
+
+        del self.all_train
+
+        if collected_shots < needed_shots:
+            warnings.warn(f"Could only collect {collected_shots}/{needed_shots} samples.", UserWarning)
+
+        return new_train_data # List of [image_tensor, label_tensor_or_int]
 
 
 def load_train_cifar10_pgd(batch_size=1,shots=16):
