@@ -36,7 +36,7 @@ class PGDAttackedCIFAR10(Dataset):
                  zip_dir: str = "./zip_files",
                  dataset_dir: str = "./extracted_files",
                  download: bool = False,
-                 device: str="gpu"):
+                 device: str="cuda"):
 
         if split not in ["train", "test"]:
             raise ValueError("split must be 'train' or 'test'")
