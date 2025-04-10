@@ -6,6 +6,7 @@ import clip
 from torchvision.datasets import CIFAR100, CIFAR10
 from dataset.cifar100 import load_train_cifar100, load_test_cifar100
 from dataset.cifar10 import load_train_cifar10, load_test_cifar10
+from dataset.clip_cifar10_pgd import *
 from model.shallow_encoder import TextEncoder,VisionEncoder
 from model.analysis_utils import Analysis_Util
 from dataset.general import load_train,load_test
@@ -445,6 +446,12 @@ class PromptCLIP_Shallow:
             self.n_cls = len(self.classes)
             self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess)
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
+        elif self.task_name == 'CIFAR10_PGD':
+            self.dataset = PGDAttackedCIFAR10(split="train", zip_dir="./zip", dataset_dir=self.data_dir, transform=self.preprocess, download=True)
+            self.classes = self.dataset.classes
+            self.n_cls = self.dataset.num_classes
+            self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot)
+            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size)
 
         elif self.task_name == 'StanfordCars':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
