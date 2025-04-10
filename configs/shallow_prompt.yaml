@@ -64,3 +64,7 @@ CIFAR100:
 CIFAR10:
   budget: 25200
   test_every: 12
+
+CIFAR10_PGD:
+  budget: 25200
+  test_every: 12
