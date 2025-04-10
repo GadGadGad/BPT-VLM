@@ -474,7 +474,7 @@ class Cifar_FewshotDataset(Dataset):
 def load_train_cifar10_pgd(batch_size=1,shots=16):
     args = {"shots":shots}
     train_data = Cifar_FewshotDataset(args)
-    train_loader = DataLoader(train_data,batch_size=batch_size,shuffle=True,num_workers=0, pin_memory=True)
+    train_loader = DataLoader(train_data,batch_size=batch_size,shuffle=True,num_workers=0)
     return train_data,train_loader
 
 class Cifar_TestDataset(Dataset):
@@ -491,7 +491,7 @@ class Cifar_TestDataset(Dataset):
 
 def load_test_cifar10_pgd(batch_size=1):
     test_data = Cifar_TestDataset()
-    test_loader = DataLoader(test_data, batch_size=batch_size,shuffle=False,num_workers=0, pin_memory=True)
+    test_loader = DataLoader(test_data, batch_size=batch_size,shuffle=False,num_workers=0)
     return test_data, test_loader
 
 print(os.path.expanduser("../dataset"))
