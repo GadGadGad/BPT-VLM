@@ -143,15 +143,13 @@ class PGDAttackedCIFAR10(Dataset):
                  print(f"Warning: Could not remove batch zip file {zip_path}: {e}")
 
 
-    # --- Length Calculation (keeps zips) ---
     def __len__(self):
         if self._calculated_length is None:
             print(f"Calculating dataset length for {self.split} set (first call, may involve downloads)...")
             total_len = 0
             self._batch_lengths = {}
-            pbar = tqdm(range(1, self.num_batches + 1), desc=f"Calculating length ({self.split})")
+            pbar = tqdm(range(1, self.num_batches + 1), desc=f"Calculating length ({self.split} set)")
             for batch_idx in pbar:
-                 # Find corresponding zip_path - ensures map is used correctly
                  zip_path = None
                  for zp, bi in self.batch_map:
                      if bi == batch_idx:
@@ -184,7 +182,6 @@ class PGDAttackedCIFAR10(Dataset):
         return self._calculated_length
 
     def _get_batch_length_from_pt(self, zip_path, batch_idx):
-        # ... (This function remains the same - extracts, reads len, deletes .pt) ...
         pt_filename = f'{self.filename_prefix}_{batch_idx}.pt'
         pt_path = os.path.join(self.dataset_dir, pt_filename)
         extracted = False
@@ -228,12 +225,9 @@ class PGDAttackedCIFAR10(Dataset):
 
         return length
 
-
-    # --- Get Item Logic ---
     def __getitem__(self, idx):
-        # ... (Index checking and finding target batch remains the same) ...
         if self._calculated_length is None:
-            _ = len(self) # Trigger length calculation
+            _ = len(self) 
 
         if idx < 0 or idx >= self._calculated_length:
              raise IndexError(f"Index {idx} out of range for dataset size {self._calculated_length}")
@@ -264,8 +258,6 @@ class PGDAttackedCIFAR10(Dataset):
 
         if target_batch_idx == -1:
              raise IndexError(f"Could not map index {idx} to any batch.")
-
-        # print(f"Debug: Accessing index {idx} -> Batch {target_batch_idx}, Local Index {local_idx}")
         return self._load_batch_and_get_item(target_zip_path, target_batch_idx, local_idx)
 
 
@@ -413,7 +405,7 @@ class Cifar_FewshotDataset(Dataset):
 def load_train_cifar10_pgd(batch_size=1,shots=16):
     args = {"shots":shots}
     train_data = Cifar_FewshotDataset(args)
-    train_loader = DataLoader(train_data,batch_size=batch_size,shuffle=True,num_workers=4)
+    train_loader = DataLoader(train_data,batch_size=batch_size,shuffle=True,num_workers=4, pin_memory=True)
     return train_data,train_loader
 
 class Cifar_TestDataset(Dataset):
@@ -430,7 +422,7 @@ class Cifar_TestDataset(Dataset):
 
 def load_test_cifar10_pgd(batch_size=1):
     test_data = Cifar_TestDataset()
-    test_loader = DataLoader(test_data, batch_size=batch_size,shuffle=True,num_workers=4)
+    test_loader = DataLoader(test_data, batch_size=batch_size,shuffle=False,num_workers=4, pin_memory=True)
     return test_data, test_loader
 
 print(os.path.expanduser("../dataset"))
