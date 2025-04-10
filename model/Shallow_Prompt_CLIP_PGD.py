@@ -450,8 +450,8 @@ class PromptCLIP_Shallow:
             self.dataset = PGDAttackedCIFAR10(split="train", zip_dir="./zip", dataset_dir=self.data_dir, download=True)
             self.classes = self.dataset.classes
             self.n_cls = self.dataset.num_classes
-            self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot)
-            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size)
+            self.train_data,self.train_loader = load_train_cifar10_pgd(batch_size=self.batch_size,shots=self.k_shot)
+            self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
 
         elif self.task_name == 'StanfordCars':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
