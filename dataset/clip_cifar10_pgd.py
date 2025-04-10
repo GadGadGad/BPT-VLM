@@ -38,8 +38,6 @@ class PGDAttackedCIFAR10(Dataset):
                  download: bool = False,
                  device: str="cuda"):
 
-        if split not in ["train", "test"]:
-            raise ValueError("split must be 'train' or 'test'")
         self.split = split
         self.filename_prefix = "trainset" if self.split == "train" else "testset"
         self.num_classes = 10
@@ -416,7 +414,6 @@ class Cifar_FewshotDataset(Dataset):
                         break
                 if zip_path is None: continue # Should not happen
 
-                # --- Simplified Load Logic (Adapt from _load_batch_and_get_item) ---
                 pt_filename = f'{self.all_train.filename_prefix}_{batch_idx}.pt'
                 pt_path = os.path.join(self.all_train.dataset_dir, pt_filename)
 
@@ -434,9 +431,8 @@ class Cifar_FewshotDataset(Dataset):
                         zip_ref.extract(pt_filename, self.all_train.dataset_dir)
                 except Exception as e:
                     print(f"Warning: Failed to extract {pt_filename}: {e}")
-                    continue # Skip this batch
-
-                batch_data = torch.load(pt_path, map_location='cpu') # Force CPU load
+                    continue 
+                batch_data = torch.load(pt_path, map_location='cpu') 
 
                 images = batch_data['images']
                 labels = batch_data['labels']
@@ -474,7 +470,7 @@ class Cifar_FewshotDataset(Dataset):
         if collected_shots < needed_shots:
             warnings.warn(f"Could only collect {collected_shots}/{needed_shots} samples.", UserWarning)
 
-        return new_train_data # List of [image_tensor, label_tensor_or_int]
+        return new_train_data
 
 
 def load_train_cifar10_pgd(batch_size=1,shots=16):
