@@ -307,7 +307,7 @@ class PGDAttackedCIFAR10(Dataset):
 
             try:
                 # print(f"Debug: Loading {pt_path} into memory")
-                self.current_batch_data = torch.load(pt_path)
+                self.current_batch_data = torch.load(pt_path, map_location=self.device)
                 self.current_batch_idx = batch_idx 
 
                 if not isinstance(self.current_batch_data, dict) or \
@@ -382,7 +382,6 @@ class Cifar_FewshotDataset(Dataset):
         return len(self.new_train_data)
 
     def __getitem__(self, idx):
-
         return {"image": self.new_train_data[idx][0], "label": self.new_train_data[idx][1]}
 
     def construct_few_shot_data(self):
