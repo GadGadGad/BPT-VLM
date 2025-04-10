@@ -420,8 +420,6 @@ class Cifar_FewshotDataset(Dataset):
                 pt_filename = f'{self.all_train.filename_prefix}_{batch_idx}.pt'
                 pt_path = os.path.join(self.all_train.dataset_dir, pt_filename)
 
-                if not os.path.exists(pt_path):
-                # Ensure zip exists (download if needed)
                 if not os.path.exists(zip_path):
                     if self.all_train.download:
                         if not self.all_train._download_single_batch(batch_idx):
