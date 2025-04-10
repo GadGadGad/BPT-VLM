@@ -401,7 +401,7 @@ class Cifar_FewshotDataset(Dataset):
                 tmp_data = [tmp[0],tmp[1]]
                 new_train_data.append(tmp_data)
                 train_shot_count[label] += 1
-
+        del self.all_train
         return new_train_data
 
 def load_train_cifar10_pgd(batch_size=1,shots=16):
