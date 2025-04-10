@@ -37,3 +37,23 @@ GOOGLE_DRIVE_FILES = {
         2: "1WuL5JvFoFX5pv8r4duHu5Obg5kK-LMVH",
     }
 }
+
+# 3
+GOOGLE_DRIVE_FILES = {
+    "train": {
+        1: "1ZG-L6fds6U6BuKv8jHtKkQMio4aWsVOn",
+        2: "1Ot2XhK9NNxAQSlqpPNoDBkKvulhxVonC",
+        3: "1VdNj1Ge5t3bc_rrtF2UdqHUBbR7qEEi1",
+        4: "1cb6NSbP4o7JSNRA-7op75sSj7gvEmKXx",
+        5: "1Y7O4TW7VdQVKSLEuZvcsY4FGKcv1QXAV",
+        6: "1Gha5OKWlQDtBpTWVhywFtloERrhVMiPm",
+        7: "1iA2X1PmJQk7k0ajUtHGqibebRH2R9llx",
+        8: "13zWaXe7pbmHXwM79cmpp6Ad1Ovv6q5ep",
+        9: "17WKQDi0EIE2LpYUzI4IqNW4ifrP68wOP",
+        10: "1sxl2PMKjYc3ciXXoGpBIs0lWjkb-Bxa5",
+    },
+    "test": {
+        1: "1K7irA5mOt6cv_ewfFNn3MEd7pQwx-C_k",
+        2: "1FKxQCaZKvtV26VFB_GO08FchbMj3nAgQ",
+    }
+}

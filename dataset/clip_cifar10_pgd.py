@@ -9,23 +9,22 @@ import gdown
 import warnings
 import shutil
 import time 
-
 GOOGLE_DRIVE_FILES = {
     "train": {
-        1: "1rpyHxJ-OvyulMtZLd97bx0Z0tOZ0-5cd",
-        2: "19Gyl9y64YpDT3zLLQZilacV9h7k-z4gN",
-        3: "1rP-xz4l9k0rQPUECL6kGhHdMvFEQ0l08",
-        4: "1Ib_oqLMtglszWckXD9vnwGBjyArQpAz5",
-        5: "1FABXrdF8zCYpdtUvaKBbyNHGtLlKbaGQ",
-        6: "1RUU4h0-guHuoy7eOLz2iIkg2ulwTV1_K",
-        7: "18h7vSwHDto57Gm7MkNIG1G-HM2i9jRUs",
-        8: "1w4DZohW0BSExjF8t9ySK-UaZ7DUhpvun",
-        9: "1u92IrSB_7fYdA587fuYR7-dhkaXa28Y_",
-        10: "1H4aGOKeLXdwv-l3Wl6k92PYDwtTeSPon",
+        1: "1ZG-L6fds6U6BuKv8jHtKkQMio4aWsVOn",
+        2: "1Ot2XhK9NNxAQSlqpPNoDBkKvulhxVonC",
+        3: "1VdNj1Ge5t3bc_rrtF2UdqHUBbR7qEEi1",
+        4: "1cb6NSbP4o7JSNRA-7op75sSj7gvEmKXx",
+        5: "1Y7O4TW7VdQVKSLEuZvcsY4FGKcv1QXAV",
+        6: "1Gha5OKWlQDtBpTWVhywFtloERrhVMiPm",
+        7: "1iA2X1PmJQk7k0ajUtHGqibebRH2R9llx",
+        8: "13zWaXe7pbmHXwM79cmpp6Ad1Ovv6q5ep",
+        9: "17WKQDi0EIE2LpYUzI4IqNW4ifrP68wOP",
+        10: "1sxl2PMKjYc3ciXXoGpBIs0lWjkb-Bxa5",
     },
     "test": {
-        1: "12BVk6eQF8ng3U3ePQ1DxNXtwY2Y3kmhc",
-        2: "1ybikWylIhULNOXWYVPWADOW2F-vvxywY",
+        1: "1K7irA5mOt6cv_ewfFNn3MEd7pQwx-C_k",
+        2: "1FKxQCaZKvtV26VFB_GO08FchbMj3nAgQ",
     }
 }
 class PGDAttackedCIFAR10(Dataset):
