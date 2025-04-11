@@ -2,8 +2,8 @@ backbone: "ViT-B/32"
 n_prompt_tokens_L: 8
 n_prompt_tokens_V: 5
 loss_type: "ce"
-intrinsic_dim_L: 250
-intrinsic_dim_V: 250
+intrinsic_dim_L: 100
+intrinsic_dim_V: 100
 pgd:
   epsilon: 0.031 
   alpha: 0.007  
@@ -13,7 +13,7 @@ adv_train:
   epsilon: 0.031 
   alpha: 0.007  
   num_iter: 3  
-  enabled: True 
+  enabled: False 
 sigma: 1
 k_shot: 16
 seed: 42
