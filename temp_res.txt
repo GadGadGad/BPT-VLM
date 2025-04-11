@@ -1,0 +1,73 @@
+
+dim: 10 - No_Adv
+---------
+Final Clean Accuracy: 
+Final PGD Accuracy  : 
+
+dim: 50 - No_Adv
+---------
+Final Clean Accuracy: 0.9030
+Final PGD Accuracy  : 0.1737
+
+dim: 100 - No_Adv
+---------
+Final Clean Accuracy: 0.8962
+Final PGD Accuracy  : 0.2659
+
+dim: 250 - No_ADV
+---------
+Final Clean Accuracy: 0.9069
+Final PGD Accuracy  : 0.5822
+
+dim: 500 - No_Adv
+---------
+Final Clean Accuracy: 
+Final PGD Accuracy  : 
+
+---------ADV TUNING-------------
+
+dim: 10 - Adv
+---------
+Final Clean Accuracy: 0.7226
+Final PGD Accuracy  : 0.0441
+
+dim: 50 - Adv
+---------
+Final Clean Accuracy: 
+Final PGD Accuracy  : 
+
+dim: 100 Adv
+---------
+Final Clean Accuracy: 
+Final PGD Accuracy  : 
+
+dim: 250 - Adv
+---------
+Final Clean Accuracy: 
+Final PGD Accuracy  : 
+
+dim: 500 - Adv
+---------
+Final Clean Accuracy: 0.1380
+Final PGD Accuracy  : 0.0000
+
+
+--------TUNING ON ADV----------
+dim: 10 - on Adv Dataset
+---------
+Final PGD Accuracy  :
+dim: 50 - on Adv Dataset
+---------
+Final PGD Accuracy  :
+
+dim: 100 - on Adv Dataset
+---------
+Final PGD Accuracy  : 0.3326
+
+dim: 250 - on Adv Dataset
+---------
+Final PGD Accuracy  :
+
+dim: 500 - on Adv Dataset
+---------
+Final PGD Accuracy  :
