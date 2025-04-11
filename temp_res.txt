@@ -21,8 +21,8 @@ Final PGD Accuracy  : 0.5822
 
 dim: 500 - No_Adv
 ---------
-Final Clean Accuracy: 
-Final PGD Accuracy  : 
+Final Clean Accuracy: 0.9018
+Final PGD Accuracy  : 0.5490
 
 ---------ADV TUNING-------------
 
