@@ -8,7 +8,7 @@ pgd:
   epsilon: 0.031 
   alpha: 0.007  
   num_iter: 3  
-  enabled: False 
+  enabled: True 
 adv_train:
   epsilon: 0.031 
   alpha: 0.007  
