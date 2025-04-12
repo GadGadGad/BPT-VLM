@@ -33,18 +33,18 @@ Final PGD Accuracy  : 0.0441
 
 dim: 50 - Adv
 ---------
-Final Clean Accuracy: 
-Final PGD Accuracy  : 
+Final Clean Accuracy: 0.5362
+Final PGD Accuracy  : 0.0101 
 
 dim: 100 Adv
 ---------
-Final Clean Accuracy: 
-Final PGD Accuracy  : 
+Final Clean Accuracy: 0.6317
+Final PGD Accuracy  : 0.1193
 
 dim: 250 - Adv
 ---------
-Final Clean Accuracy: 
-Final PGD Accuracy  : 
+Final Clean Accuracy: 0.8136
+Final PGD Accuracy  : 0.1850
 
 dim: 500 - Adv
 ---------
