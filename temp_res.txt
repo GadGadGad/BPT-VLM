@@ -67,8 +67,8 @@ Final PGD Accuracy  : 0.3326
 
 dim: 250 - on Adv Dataset
 ---------
-Final PGD Accuracy  :
+Final PGD Accuracy  : 0.3710
 
 dim: 500 - on Adv Dataset
 ---------
-Final PGD Accuracy  :
+Final PGD Accuracy  : 0.3498
