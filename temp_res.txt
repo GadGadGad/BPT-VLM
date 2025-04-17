@@ -77,11 +77,11 @@ Final PGD Accuracy  : 0.3498
 --------TUNING ON ADV (10-3)----------
 dim: 10 - on Adv Dataset
 ---------
-Final PGD Accuracy  : 
+Final PGD Accuracy  : 0.1351
 
 dim: 50 - on Adv Dataset
 ---------
-Final PGD Accuracy  : 
+Final PGD Accuracy  : 0.3171
 
 dim: 100 - on Adv Dataset
 ---------
