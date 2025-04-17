@@ -13,7 +13,7 @@ adv_train:
   epsilon: 0.031 
   alpha: 0.007  
   num_iter: 10
-  enabled: False 
+  enabled: True 
 sigma: 1
 k_shot: 16
 seed: 42
