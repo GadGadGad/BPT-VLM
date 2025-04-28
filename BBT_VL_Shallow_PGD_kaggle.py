@@ -93,25 +93,23 @@ def fitness_eval(prompt_zip_np):
 ndim_problem = intrinsic_dim_L + intrinsic_dim_V
 pro = {'fitness_function': fitness_eval, 'ndim_problem': ndim_problem}
 
-# Opt Config needs careful checking - n_individuals vs popsize
 opt_cfg = {
     'fitness_threshold': 1e-10,
-    'seed_rng': cfg.get('seed', 0), # Use seed from main cfg if available
-    'max_runtime': cfg.get('max_runtime', 20800), # Use from main cfg if available
-    'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))), # Allow initial mean override
+    'seed_rng': cfg.get('seed', 0),
+    'budget': cfg.get('budget', 20800), 
+    'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))), 
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
-    'n_individuals': cfg["popsize"], # Use popsize from main cfg
-    'is_restart': cfg.get('is_restart', False) # Use from main cfg if available
+    'n_individuals': cfg["popsize"], 
+    # 'is_restart': cfg.get('is_restart', False)
 }
 
 
 # --- Load Algorithm ---
 opt = None
 if args.opt == "shallow_cma":
-    opt = shallow_cma(cfg) # Assumes shallow_cma takes the cfg dict
+    opt = shallow_cma(cfg)
 elif args.opt == "shallow_lmcmaes":
-    # Note: LM-CMA-ES uses the fitness_eval function defined above
     opt = Shallow_LMCMAES(pro, opt_cfg)
     print("Using LM-CMA-ES (PyPop based) - Evaluation via single fitness_eval function.")
 elif args.opt == "shallow_mmes":
@@ -142,7 +140,6 @@ if args.opt in __pypop__:
         image_context = prompt_clip.get_image_information()
         prompt_clip.text_encoder.set_context(text_context)
         prompt_clip.image_encoder.set_context(image_context)
-        # The optimize call will internally use the 'fitness_eval' function
         res = opt.optimize()
         print("Optimization Result (PyPop):", res)
     else:
@@ -152,47 +149,37 @@ if args.opt in __pypop__:
         # prompt_clip.image_encoder.set_context(image_context)
         # res = opt.optimize() # May need adaptation for non-classification tasks
 
-else: # Handle custom CMA-ES loop (like original shallow_cma might have)
+else:
     if args.task_name in __classification__:
-        # Set context before optimizing
         text_context = prompt_clip.get_text_information()
         image_context = prompt_clip.get_image_information()
         prompt_clip.text_encoder.set_context(text_context)
         prompt_clip.image_encoder.set_context(image_context)
 
         print("Starting Optimization Loop...")
-        # Assume opt (e.g., shallow_cma) has ask() and tell()
         while not opt.stop():
             solutions = opt.ask() # Get population solutions [popsize, ndim]
 
-            # Generate prompts from intrinsic vectors
             prompt_text_list = prompt_clip.generate_text_prompts([x[:intrinsic_dim_L] for x in solutions])
             prompt_image_list = prompt_clip.generate_visual_prompts([x[intrinsic_dim_L:] for x in solutions])
 
-            # Evaluate fitness (either parallel or sequential)
             if cfg["parallel"]:
-                # Parallel evaluation: pass lists directly
-                # prompt_clip.eval handles the internal parallel logic
-                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = True # Ensure parallel mode
-                fitnesses = prompt_clip.eval([prompt_text_list, prompt_image_list]) # Returns a list of losses
+                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = True 
+                fitnesses = prompt_clip.eval([prompt_text_list, prompt_image_list])
                 prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False # Revert after eval
-                # fitnesses = [x.item() for x in tqdm(fitnesses, ncols=80, desc="Eval Parallel Pop")] # Removed item() call as eval should return list of floats now
-                print(f"Eval Parallel Pop (call {prompt_clip.num_call})") # Simple print instead of tqdm bar
+                # fitnesses = [x.item() for x in tqdm(fitnesses, ncols=80, desc="Eval Parallel Pop")] 
+                print(f"Eval Parallel Pop (call {prompt_clip.num_call})") 
 
             else:
-                # Sequential evaluation: iterate and call eval
                 prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False # Ensure sequential mode
                 fitnesses = []
                 for i, p_zip in enumerate(tqdm(zip(prompt_text_list, prompt_image_list), total=len(solutions), ncols=80, desc="Eval Sequential Pop")):
                      fit = prompt_clip.eval(p_zip) # eval now handles single input correctly
-                     fitnesses.append(fit.item() if isinstance(fit, torch.Tensor) else fit) # Handle tensor or float return
-                     # The logging inside eval handles printing loss/acc periodically
+                     fitnesses.append(fit.item() if isinstance(fit, torch.Tensor) else fit) 
 
-            # Tell optimizer the results
             opt.tell(solutions, fitnesses)
 
-            # Optional: Print progress summary less frequently than test_every
-            if prompt_clip.num_call % (cfg["popsize"] * 5) == 0: # Every 5 generations approx
+            if prompt_clip.num_call % (cfg["popsize"] * 5) == 0: 
                  print(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Min Loss: {prompt_clip.min_loss:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}")
 
     else:

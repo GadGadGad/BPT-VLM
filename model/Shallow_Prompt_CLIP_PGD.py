@@ -171,10 +171,9 @@ class PromptCLIP_Shallow:
             final_loss = torch.sum(focal_loss)
         return final_loss
 
-    # MODIFIED: eval now calculates loss potentially using adversarial examples
     @torch.no_grad()
     def eval(self,prompt_zip):
-        prompt_text_list, prompt_image_list = prompt_zip[0], prompt_zip[1] # These are lists if parallel, tensors otherwise
+        prompt_text_list, prompt_image_list = prompt_zip[0], prompt_zip[1] 
         self.num_call += 1
         loss = 0
         logit_scale = self.logit_scale.exp()
@@ -202,7 +201,6 @@ class PromptCLIP_Shallow:
 
             if self.parallel:
                 B = label.shape[0] # Original batch size
-                # Reshape clean images for easier slicing if needed: [popsize, B, C, H, W]
                 pop_clean_image = clean_image.view(self.popsize, B, *clean_image.shape[1:])
 
                 for i in range(self.popsize):
@@ -212,8 +210,6 @@ class PromptCLIP_Shallow:
 
                     # Determine image input for this population member
                     if self.adv_train_config["enabled"]:
-                        # Generate adversarial examples for THIS prompt pair (i)
-                        # Requires gradients for the attack calculation
                         with torch.enable_grad():
                             eval_image_i = self._pgd_attack(
                                 images=current_clean_images,
@@ -239,9 +235,7 @@ class PromptCLIP_Shallow:
             else:
                 current_clean_images = clean_image # [B, C, H, W]
 
-                # Determine image input
                 if self.adv_train_config["enabled"]:
-                     # Generate adversarial examples for the single prompt pair
                      with torch.enable_grad():
                          eval_image = self._pgd_attack(
                             images=current_clean_images,
@@ -255,10 +249,10 @@ class PromptCLIP_Shallow:
                      eval_image = current_clean_images.to(self.dtype)
 
                 image_features = self.image_encoder(eval_image, current_prompt_image)
-                image_features = image_features / image_features.norm(dim=-1, keepdim=True) # [B, D]
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
-                logits = logit_scale * image_features @ text_features.t() # [B, n_cls]
-                loss += self.metric(logits, label).item() # Accumulate loss
+                logits = logit_scale * image_features @ text_features.t()
+                loss += self.metric(logits, label).item() 
 
         epoch_min_loss = float('inf')
         best_idx_in_batch = -1
@@ -326,7 +320,7 @@ class PromptCLIP_Shallow:
 
 
     def _pgd_attack(self, images, labels, text_features, image_prompt, config):
-        """ Performs PGD attack - NO CHANGES NEEDED HERE conceptually, but ensure inputs are correct """
+        """ Performs PGD attack """
         images = images.clone().detach()
         labels = labels.clone().detach() 
 
@@ -334,23 +328,21 @@ class PromptCLIP_Shallow:
         alpha = config['alpha']
         num_iter = config['num_iter']
 
-        # Ensure delta is same dtype and device as images from the start
         delta = torch.zeros_like(images, requires_grad=True, device=self.device).to(images.dtype)
         delta.data.uniform_(-epsilon, epsilon)
-        # Project initial perturbation to valid range *relative to original image*
         delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images
         delta.data = delta.data.to(images.dtype)
 
         for _ in range(num_iter):
             delta.requires_grad_(True)
-            perturbed_image = (images + delta).to(self.dtype) # Ensure dtype for encoder
+            perturbed_image = (images + delta).to(self.dtype)
 
 
             original_im_parallel = self.image_encoder.parallel
             self.image_encoder.parallel = False
 
             image_features = self.image_encoder(perturbed_image, image_prompt)
-            self.image_encoder.parallel = original_im_parallel # Restore state
+            self.image_encoder.parallel = original_im_parallel 
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             logits = self.logit_scale.exp() * image_features @ text_features.t()
@@ -362,10 +354,10 @@ class PromptCLIP_Shallow:
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
 
             delta_grad = torch.autograd.grad(loss, delta,
-                                             only_inputs=True, # Ensure only delta grad is computed
-                                             retain_graph=False, # Don't need to retain graph after this
-                                             create_graph=False # Don't need graph for delta_grad itself
-                                             )[0] # autograd.grad returns a tuple
+                                             only_inputs=True,
+                                             retain_graph=False,
+                                             create_graph=False 
+                                             )[0]
             if delta_grad is None:
                 print(f"Warning: delta_grad is None during PGD attack iter {i}. Stopping attack for this batch.")
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
@@ -376,10 +368,8 @@ class PromptCLIP_Shallow:
             delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images
             # delta.grad.zero_()
 
-        # Return final perturbed image, detached and clamped
         return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
 
-    # test method remains largely the same - it uses the TEST pgd_config
     @torch.no_grad()
     def test(self, attack_config=None):
         """ Evaluate accuracy, optionally with PGD attack using TEST config """
@@ -389,27 +379,24 @@ class PromptCLIP_Shallow:
 
         correct = 0.
         total = 0.
-        # Ensure evaluation is done sequentially (no parallelism)
         original_parallel_state = self.parallel
         self.parallel = self.text_encoder.parallel = self.image_encoder.parallel = False # Ensure non-parallel for testing
 
-        # Pre-compute text features using the best text prompt
         text_features = self.text_encoder(self.best_prompt_text)
         text_features = text_features / text_features.norm(dim=-1,keepdim=True)
 
         desc = "Testing Clean"
         is_attack_test = False
         if attack_config and attack_config.get("enabled", False):
-             # Use settings from the passed attack_config (should be self.pgd_config for standard testing)
              desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
              is_attack_test = True
 
 
         for batch in tqdm(self.test_loader, desc=desc, leave=False):
-            image,label = self.parse_batch(batch) # parse_batch handles device transfer
+            image,label = self.parse_batch(batch) 
             total += image.size(0)
 
-            eval_image = image.to(self.dtype) # Default to clean image, ensure dtype
+            eval_image = image.to(self.dtype) 
 
             if is_attack_test:
                 with torch.enable_grad():
