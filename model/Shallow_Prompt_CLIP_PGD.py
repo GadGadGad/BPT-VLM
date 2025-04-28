@@ -350,7 +350,6 @@ class PromptCLIP_Shallow:
             loss = F.cross_entropy(logits, labels)
 
             if torch.isnan(loss):
-                print("Warning: NaN loss detected during PGD attack. Stopping attack for this batch.")
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
 
             delta_grad = torch.autograd.grad(loss, delta,
@@ -359,7 +358,6 @@ class PromptCLIP_Shallow:
                                              create_graph=False 
                                              )[0]
             if delta_grad is None:
-                print(f"Warning: delta_grad is None during PGD attack iter {i}. Stopping attack for this batch.")
                 return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
 
             grad_sign = delta_grad.sign()
@@ -374,7 +372,6 @@ class PromptCLIP_Shallow:
     def test(self, attack_config=None):
         """ Evaluate accuracy, optionally with PGD attack using TEST config """
         if self.best_prompt_text is None or self.best_prompt_image is None:
-            print("Warning: Trying to test without best prompts found yet. Returning 0 accuracy.")
             return torch.tensor(0.0)
 
         correct = 0.
