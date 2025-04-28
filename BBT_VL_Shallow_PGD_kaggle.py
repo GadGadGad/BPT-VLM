@@ -25,7 +25,8 @@ parser.add_argument("--task_name", default="CIFAR100", type=str)
 parser.add_argument("--opt", default="shallow_cma", type=str)
 parser.add_argument("--parallel", action='store_true', help='Whether to allow parallel evaluation')
 parser.add_argument("--backbone", default="ViT-B/32", type=str)
-
+parser.add_argument("--pgd_test", action='store_true', help='Enable PGD Attack during final testing')
+parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial Training')
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
@@ -46,6 +47,13 @@ if args.task_name in cfg:
         cfg[k]=v
 else:
     print(f"Warning: Task '{args.task_name}' not found in config. Using default settings.")
+
+if 'pgd' not in cfg:
+    cfg['pgd'] = {}
+    cfg['pgd']['enabled'] = args.pgd_test
+if 'adv_train' not in cfg:
+    cfg['adv_train'] = {}
+    cfg['adv_train']['enabled'] = args.adv_train
 
 # --- Setup ---
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -73,7 +81,7 @@ def fitness_eval(prompt_zip_np):
 
 
     original_parallel = prompt_clip.parallel
-    prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
+    prompt_clip.parallel = prompt_clip.text_encoder.paradv_trainallel = prompt_clip.image_encoder.parallel = False
     fit_value = prompt_clip.eval(list(zip(prompt_text_list, prompt_image_list))[0]).item() # Pass the single tuple
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = original_parallel # Restore
 
@@ -83,7 +91,7 @@ def fitness_eval(prompt_zip_np):
         print("Evaluation in fitness_eval (call {})".format(prompt_clip.num_call)) # Indicate where eval happens
         print("current loss: {}".format(prompt_clip.min_loss))
         print("Best Prompt Embedding - Acc : {:.4f}".format(prompt_clip.best_accuracy))
-        if prompt_clip.pgd_config.get("enabled", False):
+        if args.pgd_test:
             print("Best Prompt Embedding - PGD Acc : {:.4f}".format(prompt_clip.best_accuracy_pgd))
 
     return fit_value.item() if isinstance(fit_value, torch.Tensor) else fit_value
@@ -122,11 +130,13 @@ else:
     raise ValueError(f"Unsupported optimizer: {args.opt}")
 
 
-print('Population Size: {}'.format(cfg["popsize"]))
-print(f"Using Backbone: {cfg['backbone']}")
 print(f"Task: {args.task_name}")
 print(f"Optimizer: {args.opt}")
+print('Population Size: {}'.format(cfg["popsize"]))
+print(f"Using Backbone: {cfg['backbone']}")
 print(f"Parallel Evaluation during Search: {cfg['parallel']}")
+print(f"Adversarial Training (PGD during optimization): {args.adv_train}")
+print(f"PGD Attack during Final Test: {args.pgd_test}")
 print(f"Device: {device}")
 
 
@@ -199,7 +209,7 @@ final_acc_clean = prompt_clip.test(attack_config=None)
 print(f"Final Clean Accuracy: {final_acc_clean:.4f}")
 
 final_acc_pgd = torch.tensor(0.0)
-if prompt_clip.pgd_config["enabled"]:
+if args.pgd_test:
     final_acc_pgd = prompt_clip.test(attack_config=prompt_clip.pgd_config)
     print(f"Final PGD Accuracy  : {final_acc_pgd:.4f}")
 else:
@@ -214,7 +224,7 @@ content = {
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
     "loss": prompt_clip.loss, "num_call": prompt_clip.num_call,
     "final_acc_clean": final_acc_clean.item(),
-    "final_acc_pgd": final_acc_pgd.item() if prompt_clip.pgd_config["enabled"] else None, 
+    "final_acc_pgd": final_acc_pgd.item() if args.pgd_test else None, 
     "Linear_L": prompt_clip.linear_L.state_dict(),
     "Linear_V": prompt_clip.linear_V.state_dict(),
     "pgd_config_test": prompt_clip.pgd_config,
