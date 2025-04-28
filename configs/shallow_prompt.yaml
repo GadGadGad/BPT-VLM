@@ -8,12 +8,10 @@ pgd:
   epsilon: 0.031 
   alpha: 0.007  
   num_iter: 10  
-  enabled: True 
 adv_train:
   epsilon: 0.031 
   alpha: 0.007  
   num_iter: 10
-  enabled: True 
 sigma: 1
 k_shot: 16
 seed: 42
