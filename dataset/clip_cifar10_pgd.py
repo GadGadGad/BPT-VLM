@@ -370,7 +370,7 @@ class Cifar_FewshotDataset(Dataset):
     def __init__(self, args):
         self.shots = args["shots"]
         self.all_train = PGDAttackedCIFAR10(split="train", download=True, num_batches=10)
-        self.all_train.cleanup(delete_zips=True)
+        self.all_train.cleanup(delete_zips=False)
         self.new_train_data = self.construct_few_shot_data()
         pass
 
@@ -480,7 +480,7 @@ def load_train_cifar10_pgd(batch_size=1,shots=16):
 class Cifar_TestDataset(Dataset):
     def __init__(self):
         self.all_test = PGDAttackedCIFAR10(split="test", download=True, num_batches=2)
-        self.all_test.cleanup(delete_zips=True)
+        self.all_test.cleanup(delete_zips=False)
 
     def __len__(self):
         return len(self.all_test)

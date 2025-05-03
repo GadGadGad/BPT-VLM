@@ -50,10 +50,10 @@ else:
 
 if 'pgd' not in cfg:
     cfg['pgd'] = {}
-    cfg['pgd']['enabled'] = args.pgd_test
+cfg['pgd']['enabled'] = args.pgd_test
 if 'adv_train' not in cfg:
     cfg['adv_train'] = {}
-    cfg['adv_train']['enabled'] = args.adv_train
+cfg['adv_train']['enabled'] = args.adv_train
 
 # --- Setup ---
 device = "cuda" if torch.cuda.is_available() else "cpu"
