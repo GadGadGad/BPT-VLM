@@ -1,3 +1,5 @@
+# BBT_VL_Shallow_PGD.py
+
 import torch
 import argparse
 import yaml
@@ -9,9 +11,11 @@ from algorithm.LMMAES import Shallow_LMMAES
 from model.Shallow_Prompt_CLIP_PGD import PromptCLIP_Shallow
 import numpy as np
 import time
-import os #
+import os
+import logging # Import logging
 from model.analysis_utils import Analysis_Util
 
+# --- Argument Parsing ---
 __classification__ = ["CIFAR100","CIFAR10","CIFAR10_PGD","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
@@ -30,6 +34,7 @@ parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
+# --- Config Loading ---
 config_path = "./configs/shallow_prompt.yaml"
 if not os.path.exists(config_path):
     raise FileNotFoundError(f"Config file not found at {config_path}")
@@ -46,7 +51,8 @@ if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
         cfg[k]=v
 else:
-    print(f"Warning: Task '{args.task_name}' not found in config. Using default settings.")
+    # Use logging for warning instead of print
+    logging.warning(f"Task '{args.task_name}' not found in config. Using default settings.")
 
 if 'pgd' not in cfg:
     cfg['pgd'] = {}
@@ -55,21 +61,58 @@ if 'adv_train' not in cfg:
     cfg['adv_train'] = {}
 cfg['adv_train']['enabled'] = args.adv_train
 
+# --- Determine Output Directory and Base Filename ---
+output_dir = os.path.join(cfg["output_dir"], args.task_name)
+Analysis_Util.mkdir_if_missing(output_dir) # Ensure directory exists before logging setup
+
+# Define base filename structure (used for both log and pth files)
+fname_base = "{}_{}_{}_advOpt{}".format(
+    args.task_name,
+    cfg["opt_name"],
+    cfg["backbone"].replace("/", "-"),
+    cfg["adv_train"]["enabled"] # Use the actual boolean value from config
+)
+log_filename = fname_base + ".log"
+log_filepath = os.path.join(output_dir, log_filename)
+
+# --- Logging Setup ---
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# Console Handler
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+
+# File Handler (Log to file)
+fh = logging.FileHandler(log_filepath)
+fh.setLevel(logging.INFO)
+fh.setFormatter(formatter)
+logger.addHandler(fh)
+
+logger.info("--- Starting Run ---")
+logger.info(f"Arguments: {args}")
+logger.info(f"Loaded Config: {cfg}")
+logger.info(f"Log file path: {log_filepath}")
+
+
 # --- Setup ---
 device = "cuda" if torch.cuda.is_available() else "cpu"
 intrinsic_dim_L = cfg["intrinsic_dim_L"]
 intrinsic_dim_V = cfg["intrinsic_dim_V"]
 
-
-# Build CLIP model and PGD config
+# Build CLIP model
 if args.task_name in __classification__:
     prompt_clip = PromptCLIP_Shallow(args.task_name, cfg) # Pass the whole cfg
 else:
-     # Handle non-classification tasks if necessary (assuming they might exist later)
-     # prompt_clip = ...
-     pass # Placeholder
+     # Handle non-classification tasks if necessary
+     logger.error(f"Task type for '{args.task_name}' not fully implemented.")
+     # You might want to exit or raise an error here depending on requirements
+     exit() # Example: Exit if task is not supported
 
-
+# --- Fitness Evaluation Function ---
 # This function evaluates a *single* individual solution.
 def fitness_eval(prompt_zip_np):
     prompt_zip_np = np.array(prompt_zip_np) # Ensure it's numpy
@@ -79,23 +122,16 @@ def fitness_eval(prompt_zip_np):
     prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic]) # List with one element
     prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic]) # List with one element
 
-
+    # Ensure evaluation happens sequentially for single fitness calls
     original_parallel = prompt_clip.parallel
-    prompt_clip.parallel = prompt_clip.text_encoder.paradv_trainallel = prompt_clip.image_encoder.parallel = False
-    fit_value = prompt_clip.eval(list(zip(prompt_text_list, prompt_image_list))[0]).item() # Pass the single tuple
+    prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
+    # Pass the single tuple: (text_prompt_tensor, image_prompt_tensor)
+    fit_value = prompt_clip.eval([prompt_text_list[0], prompt_image_list[0]]) # Pass tuple directly
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = original_parallel # Restore
 
-    # Logging (similar to original, adjust if needed)
-    if prompt_clip.num_call % (prompt_clip.test_every) == 0:
-        print("-------------------------Epoch {}---------------------------".format(prompt_clip.num_call/prompt_clip.test_every))
-        print("Evaluation in fitness_eval (call {})".format(prompt_clip.num_call)) # Indicate where eval happens
-        print("current loss: {}".format(prompt_clip.min_loss))
-        print("Best Prompt Embedding - Acc : {:.4f}".format(prompt_clip.best_accuracy))
-        if args.pgd_test:
-            print("Best Prompt Embedding - PGD Acc : {:.4f}".format(prompt_clip.best_accuracy_pgd))
+    # Logging handled within prompt_clip.eval() if test_every condition is met
 
     return fit_value.item() if isinstance(fit_value, torch.Tensor) else fit_value
-
 
 # --- Optimization Setup ---
 ndim_problem = intrinsic_dim_L + intrinsic_dim_V
@@ -104,69 +140,74 @@ pro = {'fitness_function': fitness_eval, 'ndim_problem': ndim_problem}
 opt_cfg = {
     'fitness_threshold': 1e-10,
     'seed_rng': cfg.get('seed', 0),
-    'budget': cfg.get('budget', 20800), 
-    'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))), 
+    'budget': cfg.get('budget', 20800),
+    'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))),
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
-    'n_individuals': cfg["popsize"], 
-    # 'is_restart': cfg.get('is_restart', False)
+    'n_individuals': cfg["popsize"],
+    # 'is_restart': cfg.get('is_restart', False) # Uncomment if needed by algorithm
 }
-
 
 # --- Load Algorithm ---
 opt = None
 if args.opt == "shallow_cma":
-    opt = shallow_cma(cfg)
+    opt = shallow_cma(cfg) # Assuming shallow_cma is initialized differently
+    logger.info("Using custom shallow_cma.")
 elif args.opt == "shallow_lmcmaes":
     opt = Shallow_LMCMAES(pro, opt_cfg)
-    print("Using LM-CMA-ES (PyPop based) - Evaluation via single fitness_eval function.")
+    logger.info("Using LM-CMA-ES (PyPop based) - Evaluation via single fitness_eval function.")
 elif args.opt == "shallow_mmes":
     opt = Shallow_MMES(pro, opt_cfg)
-    print("Using MMES (PyPop based) - Evaluation via single fitness_eval function.")
+    logger.info("Using MMES (PyPop based) - Evaluation via single fitness_eval function.")
 elif args.opt == "shallow_lmmaes":
-    opt = Shallow_LMMAES(pro,opt_cfg)
-    print("Using LMMAES (PyPop based) - Evaluation via single fitness_eval function.")
+    opt = Shallow_LMMAES(pro, opt_cfg)
+    logger.info("Using LMMAES (PyPop based) - Evaluation via single fitness_eval function.")
 else:
+    logger.error(f"Unsupported optimizer: {args.opt}")
     raise ValueError(f"Unsupported optimizer: {args.opt}")
 
-
-print(f"Task: {args.task_name}")
-print(f"Optimizer: {args.opt}")
-print('Population Size: {}'.format(cfg["popsize"]))
-print(f"Using Backbone: {cfg['backbone']}")
-print(f"Parallel Evaluation during Search: {cfg['parallel']}")
-print(f"Adversarial Training (PGD during optimization): {args.adv_train}")
-print(f"PGD Attack during Final Test: {args.pgd_test}")
-print(f"Device: {device}")
+# --- Log Setup Details ---
+logger.info(f"Task: {args.task_name}")
+logger.info(f"Optimizer: {args.opt}")
+logger.info(f'Population Size: {cfg["popsize"]}')
+logger.info(f"Using Backbone: {cfg['backbone']}")
+logger.info(f"Parallel Evaluation during Search: {cfg['parallel']}")
+logger.info(f"Adversarial Training (PGD during optimization): {cfg['adv_train']['enabled']}")
+logger.info(f"PGD Attack during Final Test: {cfg['pgd']['enabled']}")
+logger.info(f"Device: {device}")
+logger.info(f"Intrinsic Dimensions: L={intrinsic_dim_L}, V={intrinsic_dim_V}")
+logger.info(f"Budget: {opt_cfg['budget']}")
 
 
 # --- Black-box prompt tuning ---
 start_time = time.time()
+logger.info("--- Starting Optimization Loop ---")
 
 if args.opt in __pypop__:
     if args.task_name in __classification__:
         # Set context before optimizing
+        logger.info("Setting up text and image context for PyPop optimizer.")
         text_context = prompt_clip.get_text_information()
         image_context = prompt_clip.get_image_information()
         prompt_clip.text_encoder.set_context(text_context)
         prompt_clip.image_encoder.set_context(image_context)
         res = opt.optimize()
-        print("Optimization Result (PyPop):", res)
+        logger.info(f"Optimization Result (PyPop): {res}")
     else:
+        logger.warning(f"PyPop optimizer path not fully defined for task {args.task_name}")
         # Handle non-classification tasks if needed
-        print(f"Warning: PyPop optimizer path not fully defined for task {args.task_name}")
         # image_context = prompt_clip.get_image_information()
         # prompt_clip.image_encoder.set_context(image_context)
-        # res = opt.optimize() # May need adaptation for non-classification tasks
+        # res = opt.optimize() # May need adaptation
 
-else:
+else: # Handle non-PyPop optimizers (like the assumed shallow_cma)
     if args.task_name in __classification__:
+        logger.info("Setting up text and image context for non-PyPop optimizer.")
         text_context = prompt_clip.get_text_information()
         image_context = prompt_clip.get_image_information()
         prompt_clip.text_encoder.set_context(text_context)
         prompt_clip.image_encoder.set_context(image_context)
 
-        print("Starting Optimization Loop...")
         while not opt.stop():
             solutions = opt.ask() # Get population solutions [popsize, ndim]
 
@@ -174,49 +215,63 @@ else:
             prompt_image_list = prompt_clip.generate_visual_prompts([x[intrinsic_dim_L:] for x in solutions])
 
             if cfg["parallel"]:
-                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = True 
+                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = True
+                # Pass a list containing two lists: [list_of_text_prompts, list_of_image_prompts]
                 fitnesses = prompt_clip.eval([prompt_text_list, prompt_image_list])
                 prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False # Revert after eval
-                # fitnesses = [x.item() for x in tqdm(fitnesses, ncols=80, desc="Eval Parallel Pop")] 
-                print(f"Eval Parallel Pop (call {prompt_clip.num_call})") 
+                logger.info(f"Evaluated Parallel Pop (call {prompt_clip.num_call})")
 
             else:
                 prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False # Ensure sequential mode
                 fitnesses = []
+                # Use tqdm for progress bar, but logging inside prompt_clip.eval handles detailed output
                 for i, p_zip in enumerate(tqdm(zip(prompt_text_list, prompt_image_list), total=len(solutions), ncols=80, desc="Eval Sequential Pop")):
-                     fit = prompt_clip.eval(p_zip) # eval now handles single input correctly
-                     fitnesses.append(fit.item() if isinstance(fit, torch.Tensor) else fit) 
+                     # Pass the single tuple: (text_prompt_tensor, image_prompt_tensor)
+                     fit = prompt_clip.eval(p_zip)
+                     fitnesses.append(fit.item() if isinstance(fit, torch.Tensor) else fit)
+                logger.info(f"Evaluated Sequential Pop (call {prompt_clip.num_call})")
+
 
             opt.tell(solutions, fitnesses)
 
-            if prompt_clip.num_call % (cfg["popsize"] * 5) == 0: 
-                 print(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Min Loss: {prompt_clip.min_loss:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}")
+            # Log progress periodically based on number of calls
+            if prompt_clip.num_call % (cfg["popsize"] * opt_cfg['verbose_frequency']) == 0:
+                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Min Loss: {prompt_clip.min_loss:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}, Best PGD Acc: {prompt_clip.best_accuracy_pgd:.4f}")
 
     else:
+        logger.warning(f"Non-PyPop optimizer path not fully defined for task {args.task_name}")
         # Handle non-classification tasks if needed
-        print(f"Warning: Non-PyPop optimizer path not fully defined for task {args.task_name}")
         # image_context =prompt_clip.get_image_information()
         # prompt_clip.image_encoder.set_context(image_context)
         # ... (similar loop structure) ...
 
 # --- Final Evaluation ---
-print("\n--- Optimization Finished ---")
+logger.info("\n--- Optimization Finished ---")
 end_time = time.time()
-print(f"Total Optimization Time: {end_time - start_time:.2f} seconds")
+optimization_time = end_time - start_time
+logger.info(f"Total Optimization Time: {optimization_time:.2f} seconds")
 
-print("\n--- Final Evaluation ---")
+logger.info("\n--- Final Evaluation using Best Prompts ---")
 final_acc_clean = prompt_clip.test(attack_config=None)
-print(f"Final Clean Accuracy: {final_acc_clean:.4f}")
+logger.info(f"Final Clean Accuracy: {final_acc_clean:.4f}")
 
 final_acc_pgd = torch.tensor(0.0)
-if args.pgd_test:
-    final_acc_pgd = prompt_clip.test(attack_config=prompt_clip.pgd_config)
-    print(f"Final PGD Accuracy  : {final_acc_pgd:.4f}")
+if cfg['pgd']['enabled']: # Check if PGD testing is enabled in config
+    if prompt_clip.best_prompt_text is not None:
+        final_acc_pgd = prompt_clip.test(attack_config=prompt_clip.pgd_config)
+        logger.info(f"Final PGD Accuracy  : {final_acc_pgd:.4f}")
+    else:
+        logger.info("Final PGD Accuracy  : Skipped (no best prompt available)")
+        final_acc_pgd = None # Indicate skipped
 else:
-    print("Final PGD Accuracy  : Skipped (PGD not enabled in config)")
+    logger.info("Final PGD Accuracy  : Skipped (PGD test not enabled in args/config)")
+    final_acc_pgd = None # Indicate skipped
 
-output_dir = os.path.join(cfg["output_dir"], args.task_name)
-# fname = "{}_{}_{}_final.pth".format(args.task_name, cfg["opt_name"], cfg["backbone"].replace("/", "-"))
+# --- Save Final Results ---
+# Use the same base filename structure defined earlier
+pth_filename = fname_base + "_final.pth"
+final_results_path = os.path.join(output_dir, pth_filename)
+
 content = {
     "task_name": args.task_name, "opt_name": cfg["opt_name"], "backbone": cfg["backbone"],
     "best_accuracy": prompt_clip.best_accuracy, "acc": prompt_clip.acc,
@@ -224,21 +279,16 @@ content = {
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
     "loss": prompt_clip.loss, "num_call": prompt_clip.num_call,
     "final_acc_clean": final_acc_clean.item(),
-    "final_acc_pgd": final_acc_pgd.item() if args.pgd_test else None, 
+    "final_acc_pgd": final_acc_pgd.item() if isinstance(final_acc_pgd, torch.Tensor) else final_acc_pgd, # Handle None case
     "Linear_L": prompt_clip.linear_L.state_dict(),
     "Linear_V": prompt_clip.linear_V.state_dict(),
     "pgd_config_test": prompt_clip.pgd_config,
-    "adv_train_config": prompt_clip.adv_train_config, 
-    "optimization_time_seconds": end_time - start_time
+    "adv_train_config": prompt_clip.adv_train_config,
+    "optimization_time_seconds": optimization_time,
+    "config_used": cfg, # Save the config used for this run
+    "args_used": vars(args) # Save the args used for this run
 }
-fname = "{}_{}_{}_advOpt{}_final.pth".format(
-    args.task_name,
-    cfg["opt_name"],
-    cfg["backbone"].replace("/", "-"),
-    prompt_clip.adv_train_config["enabled"] # True or False
-)
-Analysis_Util.save_results(content, output_dir, fname)
-print(f"Final results saved to {os.path.join(output_dir, fname)}")
 
-print("--- Run Complete ---")
-
+Analysis_Util.save_results(content, output_dir, pth_filename)
+logger.info(f"Final results saved to {final_results_path}")
+logger.info("--- Run Complete ---")

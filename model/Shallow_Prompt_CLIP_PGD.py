@@ -432,7 +432,8 @@ class PromptCLIP_Shallow:
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
         elif self.task_name == 'CIFAR10_PGD':
             self.train_data,self.train_loader = load_train_cifar10_pgd(batch_size=self.batch_size,shots=self.k_shot)
-            self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
+            # self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
+            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
             self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
             self.n_cls = len(self.classes)
 
