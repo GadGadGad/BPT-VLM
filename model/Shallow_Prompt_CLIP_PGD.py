@@ -369,10 +369,10 @@ class PromptCLIP_Shallow:
     def _evaluate_clip_baseline(self):
         print("--- Evaluating CLIP Baseline (once) ---")
         
-        prompt_texts = [f"a photo of a {c.replace('_', ' ')}" for c in self.classes]
-        tokenized_prompts = clip.tokenize(prompt_texts).to(self.device)
-        
-        text_features_baseline = self.text_encoder(tokenized_prompts).type(self.dtype)
+        pattern_prompt = [f"a photo of a {c.replace('_', ' ')}" for c in self.classes]
+        tokenized_pattern_prompts = torch.cat([clip.tokenize(pattern_prompt)]).to(self.device)
+
+        text_features_baseline = self.text_encoder(tokenized_pattern_prompts).type(self.dtype)
         text_features_baseline = text_features_baseline / text_features_baseline.norm(dim=-1, keepdim=True)
 
         correct = 0.
