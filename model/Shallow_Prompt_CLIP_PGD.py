@@ -182,14 +182,12 @@ class PromptCLIP_Shallow:
             # text_features: [popsize * n_cls, D]
             text_features = self.text_encoder(prompt_text_list)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            # Reshape for easier access: [popsize, n_cls, D]
             pop_txt_features = text_features.view(self.popsize, self.n_cls, -1)
-            loss = [0.0] * self.popsize # Initialize list for parallel losses
+            loss = [0.0] * self.popsize
         else:
             # text_features: [n_cls, D]
             text_features = self.text_encoder(prompt_text_list)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            # Store single prompts for potential best update
             current_prompt_text = prompt_text_list
             current_prompt_image = prompt_image_list
 
@@ -237,13 +235,13 @@ class PromptCLIP_Shallow:
 
                 if self.adv_train_config["enabled"]:
                      with torch.enable_grad():
-                         eval_image = self._pgd_attack(
+                        eval_image = self._pgd_attack(
                             images=current_clean_images,
                             labels=label,
                             text_features=text_features,
                             image_prompt=current_prompt_image,
                             config=self.adv_train_config
-                         )
+                        )
                      eval_image = eval_image.to(self.dtype)
                 else:
                      eval_image = current_clean_images.to(self.dtype)
