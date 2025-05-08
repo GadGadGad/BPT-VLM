@@ -368,10 +368,11 @@ class PromptCLIP_Shallow:
     @torch.no_grad()
     def _evaluate_clip_baseline(self):
         print("--- Evaluating CLIP Baseline (once) ---")
+        
         prompt_texts = [f"a photo of a {c.replace('_', ' ')}" for c in self.classes]
         tokenized_prompts = clip.tokenize(prompt_texts).to(self.device)
         
-        text_features_baseline = self.model.encode_text(tokenized_prompts).type(self.dtype)
+        text_features_baseline = self.text_encoder(tokenized_prompts).type(self.dtype)
         text_features_baseline = text_features_baseline / text_features_baseline.norm(dim=-1, keepdim=True)
 
         correct = 0.
@@ -380,11 +381,11 @@ class PromptCLIP_Shallow:
 
         original_parallel_status = self.parallel
         self.parallel = False 
-
+    
         for batch in tqdm(self.test_loader, desc="Evaluating CLIP Baseline with 'a photo of a {c}'", leave=False):
             images, labels = self.parse_batch(batch) 
             
-            image_features_baseline = self.model.encode_image(images).type(self.dtype)
+            image_features_baseline = self.image_encoder(images).type(self.dtype)
             image_features_baseline = image_features_baseline / image_features_baseline.norm(dim=-1, keepdim=True)
 
             logits = logit_scale * image_features_baseline @ text_features_baseline.t()
