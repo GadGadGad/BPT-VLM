@@ -96,19 +96,15 @@ class PromptCLIP_Shallow:
         self.pgd_config = cfg.get("pgd", {"enabled": False}) # Get PGD config for TESTING
         if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
             print("PGD Attack Enabled (Testing or Training).")
-            try:
-                mean = self.preprocess.transforms[-1].mean
-                std = self.preprocess.transforms[-1].std
-                self.norm_mean = torch.tensor(mean).to(self.device).view(3, 1, 1)
-                self.norm_std = torch.tensor(std).to(self.device).view(3, 1, 1)
-                self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
-                self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
-                print(f"  Test PGD Config: Epsilon={self.pgd_config.get('epsilon', 'N/A')}, Alpha={self.pgd_config.get('alpha', 'N/A')}, Iter={self.pgd_config.get('num_iter', 'N/A')}")
-            except Exception as e:
-                 print(f"Warning: Could not extract mean/std from preprocess for PGD clipping. PGD might not work correctly. Disabling PGD. Error: {e}")
-                 self.pgd_config["enabled"] = False
-                 self.adv_train_config["enabled"] = False 
-
+            mean = self.preprocess.transforms[-1].mean
+            std = self.preprocess.transforms[-1].std
+            self.norm_mean = torch.tensor(mean).to(self.device).view(3, 1, 1)
+            self.norm_std = torch.tensor(std).to(self.device).view(3, 1, 1)
+            self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
+            self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
+            print(f"  Test PGD Config: Epsilon={self.pgd_config.get('epsilon', 'N/A')}, Alpha={self.pgd_config.get('alpha', 'N/A')}, Iter={self.pgd_config.get('num_iter', 'N/A')}")
+        self._baseline_evaluated = False
+        self.baseline_accuracy_fixed_prompt = 0.0
 
     def get_text_information(self,caption=None):
         prompt_prefix = " ".join(["X"] * self.n_prompt_tokens_L)
@@ -170,27 +166,13 @@ class PromptCLIP_Shallow:
             focal_loss = (1 - pt) ** gamma * ce_loss
             final_loss = torch.sum(focal_loss)
         return final_loss
-
+    
     @torch.no_grad()
-    def eval(self,prompt_zip):
-        # Call clean test function before even tuning
-        acc_clean = self.test(attack_config=None)
-        self.acc.append(acc_clean.item()) # Store clean accuracy
-        self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
-        print(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
-
-        
-        acc_attacked = torch.tensor(0.0) 
-        if self.pgd_config["enabled"] and self.best_prompt_text is not None:
-            acc_attacked = self.test(attack_config=self.pgd_config)
-            self.acc_pgd.append(acc_attacked.item()) 
-            self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
-            print(f"PGD Accuracy (Test): {acc_attacked:.4f} (Best PGD  : {self.best_accuracy_pgd:.4f})")
-        elif self.pgd_config["enabled"]:
-                print("PGD Accuracy (Test): Skipped (no best prompt yet)")
-        elif not self.pgd_config["enabled"]:
-                print("PGD Accuracy (Test): Disabled in config")
-                
+    def eval(self, prompt_zip):
+        if not hasattr(self, '_baseline_evaluated') or not self._baseline_evaluated:
+            self.baseline_accuracy_fixed_prompt = self._evaluate_clip_baseline()
+            self._baseline_evaluated = True
+    
         prompt_text_list, prompt_image_list = prompt_zip[0], prompt_zip[1] 
         self.num_call += 1
         loss = 0
@@ -383,7 +365,38 @@ class PromptCLIP_Shallow:
             # delta.grad.zero_()
 
         return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
+    @torch.no_grad()
+    def _evaluate_clip_baseline(self):
+        print("--- Evaluating CLIP Baseline (once) ---")
+        prompt_texts = [f"a photo of a {c.replace('_', ' ')}" for c in self.classes]
+        tokenized_prompts = clip.tokenize(prompt_texts).to(self.device)
+        
+        text_features_baseline = self.model.encode_text(tokenized_prompts).type(self.dtype)
+        text_features_baseline = text_features_baseline / text_features_baseline.norm(dim=-1, keepdim=True)
 
+        correct = 0.
+        total = 0.
+        logit_scale = self.model.logit_scale.exp()
+
+        original_parallel_status = self.parallel
+        self.parallel = False 
+
+        for batch in tqdm(self.test_loader, desc="Evaluating CLIP Baseline with 'a photo of a {c}'", leave=False):
+            images, labels = self.parse_batch(batch) 
+            
+            image_features_baseline = self.model.encode_image(images).type(self.dtype)
+            image_features_baseline = image_features_baseline / image_features_baseline.norm(dim=-1, keepdim=True)
+
+            logits = logit_scale * image_features_baseline @ text_features_baseline.t()
+            predictions = logits.argmax(dim=-1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+        
+        self.parallel = original_parallel_status
+
+        accuracy = correct / total
+        print(f"CLIP Baseline Accuracy with 'a photo of a {{c}}': {accuracy:.4f}")
+        return accuracy
     @torch.no_grad()
     def test(self, attack_config=None):
         """ Evaluate accuracy, optionally with PGD attack using TEST config """
