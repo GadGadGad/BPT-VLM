@@ -368,7 +368,7 @@ class PromptCLIP_Shallow:
     @torch.no_grad()
     def _evaluate_clip_baseline(self):
         print("--- Evaluating CLIP Baseline (once) ---")
-        self.model.to(self.model.dtype)
+        self.model.to(self.dtype)
         pattern_prompt = [f"a photo of a {c.replace('_', ' ')}" for c in self.classes]
         tokenized_pattern_prompts = torch.cat([clip.tokenize(pattern_prompt)]).to(self.device)
 
