@@ -60,6 +60,7 @@ class PromptCLIP_Shallow:
         self.init_prompt = None
         self.imsize = self.image_encoder.input_resolution
         self.logit_scale = self.model.logit_scale
+        self.model = self.model.to(self.model.dtype)
         self.dtype = self.model.dtype
         self.best_prompt_text = None
         self.best_prompt_image = None
