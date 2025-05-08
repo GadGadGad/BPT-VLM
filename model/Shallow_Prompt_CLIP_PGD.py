@@ -384,7 +384,7 @@ class PromptCLIP_Shallow:
     
         for batch in tqdm(self.test_loader, desc="Evaluating CLIP Baseline with 'a photo of a {c}'", leave=False):
             images, labels = self.parse_batch(batch) 
-            
+            images = images.to(self.dtype)
             image_features_baseline = self.model.encode_image(images).type(self.dtype)
             image_features_baseline = image_features_baseline / image_features_baseline.norm(dim=-1, keepdim=True)
 
