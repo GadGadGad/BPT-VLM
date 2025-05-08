@@ -173,6 +173,24 @@ class PromptCLIP_Shallow:
 
     @torch.no_grad()
     def eval(self,prompt_zip):
+        # Call clean test function before even tuning
+        acc_clean = self.test(attack_config=None)
+        self.acc.append(acc_clean.item()) # Store clean accuracy
+        self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
+        print(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
+
+        
+        acc_attacked = torch.tensor(0.0) 
+        if self.pgd_config["enabled"] and self.best_prompt_text is not None:
+            acc_attacked = self.test(attack_config=self.pgd_config)
+            self.acc_pgd.append(acc_attacked.item()) 
+            self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
+            print(f"PGD Accuracy (Test): {acc_attacked:.4f} (Best PGD  : {self.best_accuracy_pgd:.4f})")
+        elif self.pgd_config["enabled"]:
+                print("PGD Accuracy (Test): Skipped (no best prompt yet)")
+        elif not self.pgd_config["enabled"]:
+                print("PGD Accuracy (Test): Disabled in config")
+                
         prompt_text_list, prompt_image_list = prompt_zip[0], prompt_zip[1] 
         self.num_call += 1
         loss = 0
