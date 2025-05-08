@@ -60,7 +60,6 @@ class PromptCLIP_Shallow:
         self.init_prompt = None
         self.imsize = self.image_encoder.input_resolution
         self.logit_scale = self.model.logit_scale
-        self.model = self.model.to(self.model.dtype)
         self.dtype = self.model.dtype
         self.best_prompt_text = None
         self.best_prompt_image = None
@@ -104,8 +103,8 @@ class PromptCLIP_Shallow:
             self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
             self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
             print(f"  Test PGD Config: Epsilon={self.pgd_config.get('epsilon', 'N/A')}, Alpha={self.pgd_config.get('alpha', 'N/A')}, Iter={self.pgd_config.get('num_iter', 'N/A')}")
-        self._baseline_evaluated = False
-        self.baseline_accuracy_fixed_prompt = 0.0
+        # self._baseline_evaluated = False
+        # self.baseline_accuracy_fixed_prompt = 0.0
 
     def get_text_information(self,caption=None):
         prompt_prefix = " ".join(["X"] * self.n_prompt_tokens_L)
@@ -170,9 +169,9 @@ class PromptCLIP_Shallow:
     
     @torch.no_grad()
     def eval(self, prompt_zip):
-        if not hasattr(self, '_baseline_evaluated') or not self._baseline_evaluated:
-            self.baseline_accuracy_fixed_prompt = self._evaluate_clip_baseline()
-            self._baseline_evaluated = True
+        # if not hasattr(self, '_baseline_evaluated') or not self._baseline_evaluated:
+        #     self.baseline_accuracy_fixed_prompt = self._evaluate_clip_baseline()
+        #     self._baseline_evaluated = True
     
         prompt_text_list, prompt_image_list = prompt_zip[0], prompt_zip[1] 
         self.num_call += 1
@@ -367,38 +366,37 @@ class PromptCLIP_Shallow:
 
         return (images + delta.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
     @torch.no_grad()
-    def _evaluate_clip_baseline(self):
-        print("--- Evaluating CLIP Baseline (once) ---")
-        pattern_prompt = [f"a photo of a {c.replace('_', ' ')}" for c in self.classes]
-        tokenized_pattern_prompts = torch.cat([clip.tokenize(pattern_prompt)]).to(self.device)
-
-        text_features_baseline = self.model.encode_text(tokenized_pattern_prompts).type(self.dtype)
-        text_features_baseline = text_features_baseline / text_features_baseline.norm(dim=-1, keepdim=True)
-
-
-        correct = 0.
-        total = 0.
-        logit_scale = self.model.logit_scale.exp()
-
-        original_parallel_status = self.parallel
-        self.parallel = False 
-
-        for batch in tqdm(self.test_loader, desc="Evaluating CLIP Baseline with 'a photo of a {c}'", leave=False):
-            images, labels = self.parse_batch(batch) 
-            
-            image_features_baseline = self.model.encode_image(images).type(self.dtype)
-            image_features_baseline = image_features_baseline / image_features_baseline.norm(dim=-1, keepdim=True)
-
-            logits = logit_scale * image_features_baseline @ text_features_baseline.t()
-            predictions = logits.argmax(dim=-1)
-            correct += (predictions == labels).sum().item()
-            total += labels.size(0)
+    # def _evaluate_clip_baseline(self):
+    #     print("--- Evaluating CLIP Baseline (once) ---")
+    #     prompt_texts = [f"a photo of a {c.replace('_', ' ')}" for c in self.classes]
+    #     tokenized_prompts = clip.tokenize(prompt_texts).to(self.device)
         
-        self.parallel = original_parallel_status
+    #     text_features_baseline = self.model.encode_text(tokenized_prompts).type(self.dtype)
+    #     text_features_baseline = text_features_baseline / text_features_baseline.norm(dim=-1, keepdim=True)
 
-        accuracy = correct / total
-        print(f"CLIP Baseline Accuracy with 'a photo of a {{c}}': {accuracy:.4f}")
-        return accuracy
+    #     correct = 0.
+    #     total = 0.
+    #     logit_scale = self.model.logit_scale.exp()
+
+    #     original_parallel_status = self.parallel
+    #     self.parallel = False 
+
+    #     for batch in tqdm(self.test_loader, desc="Evaluating CLIP Baseline with 'a photo of a {c}'", leave=False):
+    #         images, labels = self.parse_batch(batch) 
+            
+    #         image_features_baseline = self.model.encode_image(images).type(self.dtype)
+    #         image_features_baseline = image_features_baseline / image_features_baseline.norm(dim=-1, keepdim=True)
+
+    #         logits = logit_scale * image_features_baseline @ text_features_baseline.t()
+    #         predictions = logits.argmax(dim=-1)
+    #         correct += (predictions == labels).sum().item()
+    #         total += labels.size(0)
+        
+    #     self.parallel = original_parallel_status
+
+    #     accuracy = correct / total
+    #     print(f"CLIP Baseline Accuracy with 'a photo of a {{c}}': {accuracy:.4f}")
+    #     return accuracy
     @torch.no_grad()
     def test(self, attack_config=None):
         """ Evaluate accuracy, optionally with PGD attack using TEST config """
