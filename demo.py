@@ -35,6 +35,7 @@ parser.add_argument("--task_name", default="caltech101", type=str)
 parser.add_argument("--split", default=None, type=str)
 parser.add_argument("--opt", default="shallow_cma", type=str)
 parser.add_argument("--backbone",default="ViT-B-32")
+parser.add_argument("--adv_train", action='store_true')
 args = parser.parse_args()
 
 # Configuration
@@ -49,6 +50,7 @@ cfg["output_dir"] = __output__
 cfg["opt_name"] = args.opt
 cfg["backbone"] = __backbone__
 cfg["parallel"] = False
+cfg['adv_train'] = args.adv_train
 for k,v in cfg[args.task_name].items():
     cfg[k]=v
 
