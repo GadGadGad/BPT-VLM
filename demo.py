@@ -19,7 +19,7 @@ from tqdm import tqdm
 from torch.nn import functional as F
 
 # Global_Variables
-__classification__ = ["CIFAR10", "CIFAR100","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
+__classification__ = ["CIFAR10", "CIFAR100", "CIFAR10_PGD","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
 __dataset__ = "/kaggle/working/BPT-VLM/dataset"
