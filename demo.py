@@ -2,9 +2,9 @@ import torch
 import argparse
 import os
 import yaml
-from model.Shallow_Prompt_CLIP import PromptCLIP_Shallow
+from model.Shallow_Prompt_CLIP_PGD import PromptCLIP_Shallow
 from model.Deep_Prompt_CLIP import PromptCLIP_Deep
-from model.Shallow_Prompt_ReCLIP import PromptReCLIP_Shallow
+# from model.Shallow_Prompt_ReCLIP import PromptReCLIP_Shallow
 import time
 from collections import defaultdict
 import json
@@ -13,13 +13,13 @@ import random
 import copy
 from PIL import Image
 from tqdm import tqdm
-from model.reclip.interpreter import *
-from model.reclip.executor import *
-from model.reclip.parse import Parse
+# from model.reclip.interpreter import *
+# from model.reclip.executor import *
+# from model.reclip.parse import Parse
 from torch.nn import functional as F
 
 # Global_Variables
-__classification__ = ["CIFAR100","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
+__classification__ = ["CIFAR10", "CIFAR100","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
 __dataset__ = "/kaggle/working/BPT-VLM/dataset"
