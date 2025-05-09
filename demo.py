@@ -52,8 +52,8 @@ cfg["parallel"] = False
 for k,v in cfg[args.task_name].items():
     cfg[k]=v
 
-task_cfg_file = os.path.join("./configs","refcoco.yaml")
-task_cfg = yaml.load(open(task_cfg_file), Loader=yaml.FullLoader)
+# task_cfg_file = os.path.join("./configs","refcoco.yaml")
+# task_cfg = yaml.load(open(task_cfg_file), Loader=yaml.FullLoader)
 
 # Load the Model
 assert os.path.exists(args.checkpoint_dir), "No such checkpoint directory path {}".format(args.checkpoint_dir)
