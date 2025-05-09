@@ -113,23 +113,19 @@ else:
      exit() # Example: Exit if task is not supported
 
 # --- Fitness Evaluation Function ---
-# This function evaluates a *single* individual solution.
 def fitness_eval(prompt_zip_np):
     prompt_zip_np = np.array(prompt_zip_np) # Ensure it's numpy
     prompt_text_intrinsic = prompt_zip_np[:intrinsic_dim_L]
     prompt_image_intrinsic = prompt_zip_np[intrinsic_dim_L:]
 
-    prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic]) # List with one element
-    prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic]) # List with one element
+    prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic]) 
+    prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic]) 
 
     # Ensure evaluation happens sequentially for single fitness calls
     original_parallel = prompt_clip.parallel
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
-    # Pass the single tuple: (text_prompt_tensor, image_prompt_tensor)
-    fit_value = prompt_clip.eval([prompt_text_list[0], prompt_image_list[0]]) # Pass tuple directly
+    fit_value = prompt_clip.eval([prompt_text_list[0], prompt_image_list[0]])
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = original_parallel # Restore
-
-    # Logging handled within prompt_clip.eval() if test_every condition is met
 
     return fit_value.item() if isinstance(fit_value, torch.Tensor) else fit_value
 
@@ -140,7 +136,7 @@ pro = {'fitness_function': fitness_eval, 'ndim_problem': ndim_problem}
 opt_cfg = {
     'fitness_threshold': 1e-10,
     'seed_rng': cfg.get('seed', 0),
-    'budget': cfg.get('budget', 20800),
+    'budget': cfg.get('budget', 25200),
     'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))),
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
@@ -151,7 +147,7 @@ opt_cfg = {
 # --- Load Algorithm ---
 opt = None
 if args.opt == "shallow_cma":
-    opt = shallow_cma(cfg) # Assuming shallow_cma is initialized differently
+    opt = shallow_cma(cfg) #
     logger.info("Using custom shallow_cma.")
 elif args.opt == "shallow_lmcmaes":
     opt = Shallow_LMCMAES(pro, opt_cfg)
@@ -256,19 +252,18 @@ final_acc_clean = prompt_clip.test(attack_config=None)
 logger.info(f"Final Clean Accuracy: {final_acc_clean:.4f}")
 
 final_acc_pgd = torch.tensor(0.0)
-if cfg['pgd']['enabled']: # Check if PGD testing is enabled in config
+if cfg['pgd']['enabled']:
     if prompt_clip.best_prompt_text is not None:
         final_acc_pgd = prompt_clip.test(attack_config=prompt_clip.pgd_config)
         logger.info(f"Final PGD Accuracy  : {final_acc_pgd:.4f}")
     else:
         logger.info("Final PGD Accuracy  : Skipped (no best prompt available)")
-        final_acc_pgd = None # Indicate skipped
+        final_acc_pgd = None 
 else:
     logger.info("Final PGD Accuracy  : Skipped (PGD test not enabled in args/config)")
-    final_acc_pgd = None # Indicate skipped
-
+    final_acc_pgd = None 
+    
 # --- Save Final Results ---
-# Use the same base filename structure defined earlier
 pth_filename = fname_base + "_final.pth"
 final_results_path = os.path.join(output_dir, pth_filename)
 
@@ -279,14 +274,14 @@ content = {
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
     "loss": prompt_clip.loss, "num_call": prompt_clip.num_call,
     "final_acc_clean": final_acc_clean.item(),
-    "final_acc_pgd": final_acc_pgd.item() if isinstance(final_acc_pgd, torch.Tensor) else final_acc_pgd, # Handle None case
+    "final_acc_pgd": final_acc_pgd.item() if isinstance(final_acc_pgd, torch.Tensor) else final_acc_pgd,
     "Linear_L": prompt_clip.linear_L.state_dict(),
     "Linear_V": prompt_clip.linear_V.state_dict(),
     "pgd_config_test": prompt_clip.pgd_config,
     "adv_train_config": prompt_clip.adv_train_config,
     "optimization_time_seconds": optimization_time,
-    "config_used": cfg, # Save the config used for this run
-    "args_used": vars(args) # Save the args used for this run
+    "config_used": cfg, 
+    "args_used": vars(args)
 }
 
 Analysis_Util.save_results(content, output_dir, pth_filename)

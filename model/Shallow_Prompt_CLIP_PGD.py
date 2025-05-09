@@ -35,9 +35,9 @@ class PromptCLIP_Shallow:
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
         if self.adv_train_config["enabled"]:
             print("--- Adversarial Prompt Optimization ENABLED ---")
-            if "epsilon" not in self.adv_train_config: self.adv_train_config["epsilon"] = 4/255
-            if "alpha" not in self.adv_train_config: self.adv_train_config["alpha"] = 1/255
-            if "num_iter" not in self.adv_train_config: self.adv_train_config["num_iter"] = 5
+            if "epsilon" not in self.adv_train_config: self.adv_train_config["epsilon"] = 8/255
+            if "alpha" not in self.adv_train_config: self.adv_train_config["alpha"] = 8/255/4
+            if "num_iter" not in self.adv_train_config: self.adv_train_config["num_iter"] = 10
             print(f"  Training PGD Config: Epsilon={self.adv_train_config['epsilon']}, Alpha={self.adv_train_config['alpha']}, Iter={self.adv_train_config['num_iter']}")
         else:
             print("--- Standard (Clean) Prompt Optimization ---")
@@ -496,13 +496,10 @@ class PromptCLIP_Shallow:
 
 
     def parse_batch(self,batch):
-        # Modified slightly to ensure label is not repeated when parallel
         image = batch["image"]
         label = batch["label"]
-        image = image.to(device=self.device, dtype=self.dtype) # Apply dtype here
-        label = label.to(device=self.device) # Labels usually int64, no dtype change
+        image = image.to(device=self.device, dtype=self.dtype)
+        label = label.to(device=self.device)
         if self.parallel:
-            # Repeat image for each member of the population
             image = image.repeat(self.popsize, 1, 1, 1)
-            # DO NOT repeat labels. Labels correspond to the original batch size.
         return image, label
