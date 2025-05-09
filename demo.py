@@ -57,7 +57,7 @@ for k,v in cfg[args.task_name].items():
 
 # Load the Model
 assert os.path.exists(args.checkpoint_dir), "No such checkpoint directory path {}".format(args.checkpoint_dir)
-checkpoint_path = os.path.join(args.checkpoint_dir,args.checkpoint_name if args.checkpoint_name else '',args.checkpoint_name+'_'+args.opt+'_'+args.backbone+'.pth')
+checkpoint_path = os.path.join(args.checkpoint_dir,args.checkpoint_name if args.checkpoint_name is not None else '',args.checkpoint_name+'_'+args.opt+'_'+args.backbone+'.pth')
 content = torch.load(checkpoint_path)
 
 prompt_clip = None
