@@ -7,7 +7,7 @@ intrinsic_dim_V: 500
 pgd:
   epsilon: 0.031 
   alpha: 0.007  
-  num_iter: 10  
+  num_iter: 20  
 adv_train:
   epsilon: 0.031 
   alpha: 0.007  

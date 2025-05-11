@@ -57,8 +57,6 @@ cfg['pgd']['enabled'] = args.pgd_test
 if 'adv_train' not in cfg:
     cfg['adv_train'] = {}
 cfg['adv_train']['enabled'] = args.adv_train
-
-
 cfg['adv_train_config'] = cfg.get("adv_train", {"enabled": False})
 cfg['pgd_config'] = cfg.get("pgd", {"enabled": False}) 
 
