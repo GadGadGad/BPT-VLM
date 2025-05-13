@@ -39,6 +39,7 @@ class PromptCLIP_Shallow:
             if "alpha" not in self.adv_train_config: self.adv_train_config["alpha"] = 8/255/4
             if "num_iter" not in self.adv_train_config: self.adv_train_config["num_iter"] = 10
             print(f"  Training PGD Config: Epsilon={self.adv_train_config['epsilon']}, Alpha={self.adv_train_config['alpha']}, Iter={self.adv_train_config['num_iter']}")
+            print(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0.")
         else:
             print("--- Standard (Clean) Prompt Optimization ---")
         # -----------------------------------------
@@ -66,7 +67,6 @@ class PromptCLIP_Shallow:
         self.best_accuracy = 0
         self.best_accuracy_pgd = 0
         self.min_loss = None
-        self.loss = []
         self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize
         self.sigma = cfg["sigma"]
         # Lauguage Linear Layer
@@ -170,6 +170,11 @@ class PromptCLIP_Shallow:
     def eval(self, prompt_zip):
         prompt_text_list, prompt_image_list = prompt_zip[0], prompt_zip[1] 
         self.num_call += 1
+        is_current_eval_adversarial = False
+        if self.adv_train_config["enabled"]:
+            if self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0): # Ensure test_every is positive
+                is_current_eval_adversarial = True
+        
         loss = 0
         logit_scale = self.logit_scale.exp()
 
@@ -202,7 +207,7 @@ class PromptCLIP_Shallow:
                     current_clean_images = pop_clean_image[i] # [B, C, H, W]
 
                     # Determine image input for this population member
-                    if self.adv_train_config["enabled"]:
+                    if is_current_eval_adversarial:
                         with torch.enable_grad():
                             eval_image_i = self._pgd_attack(
                                 images=current_clean_images,
@@ -228,7 +233,7 @@ class PromptCLIP_Shallow:
             else:
                 current_clean_images = clean_image # [B, C, H, W]
 
-                if self.adv_train_config["enabled"]:
+                if is_current_eval_adversarial:
                      with torch.enable_grad():
                         eval_image = self._pgd_attack(
                             images=current_clean_images,
