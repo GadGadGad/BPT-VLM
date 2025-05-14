@@ -27,12 +27,12 @@ class PromptCLIP_Shallow:
         self.num_call = 0
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
-        self.load_dataset()
         self.loss = []
         self.acc = []
         self.acc_pgd = []
-
+        self.pgd_config = cfg.get("pgd", {"enabled": False}) # Get PGD config for TESTING
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
+        self.load_dataset()
         if self.adv_train_config["enabled"]:
             print("--- Adversarial Prompt Optimization ENABLED ---")
             if "epsilon" not in self.adv_train_config: self.adv_train_config["epsilon"] = 8/255
@@ -93,7 +93,6 @@ class PromptCLIP_Shallow:
         for p in self.linear_V.parameters():
             torch.nn.init.normal_(p, mu, std)
 
-        self.pgd_config = cfg.get("pgd", {"enabled": False}) # Get PGD config for TESTING
         if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
             print("PGD Attack Enabled (Testing or Training).")
             mean = self.preprocess.transforms[-1].mean
@@ -430,7 +429,7 @@ class PromptCLIP_Shallow:
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
         elif self.task_name == 'CIFAR10_PGD':
             self.train_data,self.train_loader = load_train_cifar10_pgd(batch_size=self.batch_size,shots=self.k_shot)
-            if self.pgd_config["enabled"]:
+            if if self.pgd_config["enabled"]
                 self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
             else:
                 self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
