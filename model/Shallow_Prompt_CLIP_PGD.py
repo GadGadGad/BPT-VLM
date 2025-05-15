@@ -31,6 +31,7 @@ class PromptCLIP_Shallow:
         self.acc = []
         self.acc_pgd = []
         self.pgd_config = cfg.get("pgd", {"enabled": False}) # Get PGD config for TESTING
+        self.pgd_original_prompt = self.pgd_config.get("original_prompt", False)
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
         self.load_dataset()
         if self.adv_train_config["enabled"]:
@@ -42,6 +43,17 @@ class PromptCLIP_Shallow:
             print(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0.")
         else:
             print("--- Standard (Clean) Prompt Optimization ---")
+        if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
+            print("PGD Testing ENABLED.")
+            mean = self.preprocess.transforms[-1].mean
+            std = self.preprocess.transforms[-1].std
+            self.norm_mean = torch.tensor(mean).to(self.device).view(3, 1, 1)
+            self.norm_std = torch.tensor(std).to(self.device).view(3, 1, 1)
+            self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
+            self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
+            print(f"  Test PGD Config: Epsilon={self.pgd_config.get('epsilon', 'N/A')}, Alpha={self.pgd_config.get('alpha', 'N/A')}, Iter={self.pgd_config.get('num_iter', 'N/A')}")
+        else:
+            print("PGD Testing DISABLED.")
         # -----------------------------------------
 
         # Text Encoder
@@ -93,16 +105,6 @@ class PromptCLIP_Shallow:
         for p in self.linear_V.parameters():
             torch.nn.init.normal_(p, mu, std)
 
-        if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
-            print("PGD Attack Enabled (Testing or Training).")
-            mean = self.preprocess.transforms[-1].mean
-            std = self.preprocess.transforms[-1].std
-            self.norm_mean = torch.tensor(mean).to(self.device).view(3, 1, 1)
-            self.norm_std = torch.tensor(std).to(self.device).view(3, 1, 1)
-            self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
-            self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
-            print(f"  Test PGD Config: Epsilon={self.pgd_config.get('epsilon', 'N/A')}, Alpha={self.pgd_config.get('alpha', 'N/A')}, Iter={self.pgd_config.get('num_iter', 'N/A')}")
-
 
     def get_text_information(self,caption=None):
         prompt_prefix = " ".join(["X"] * self.n_prompt_tokens_L)
@@ -124,7 +126,17 @@ class PromptCLIP_Shallow:
                        "init_pattern_embedding":init_pattern_embedding, "tokenized_pattern_prompts":tokenized_pattern_prompts,"batch_size":self.batch_size,
                        "pop_size":self.popsize,"parallel":self.parallel}
         return context
-
+    @torch.no_grad()
+    def get_original_text_features(self):
+        """ Generates text features using standard prompts"""
+        classnames = [name.replace("_", " ").replace("-"," ") for name in self.classes]
+        # Using a common template, e.g., "a photo of a {classname}."
+        prompts = [f"a photo of a {name}." for name in classnames]
+        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts]).to(self.device)
+        text_features = self.model.encode_text(tokenized_prompts).type(self.dtype)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        return text_features
+    
     def get_image_information(self):
         context = {"n_prompt_tokens_V": self.n_prompt_tokens_V,
                    "batch_size": self.batch_size, "pop_size": self.popsize, "parallel": self.parallel}
@@ -289,7 +301,8 @@ class PromptCLIP_Shallow:
                 acc_attacked = self.test(attack_config=self.pgd_config)
                 self.acc_pgd.append(acc_attacked.item()) 
                 self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
-                print(f"PGD Accuracy (Test): {acc_attacked:.4f} (Best PGD  : {self.best_accuracy_pgd:.4f})")
+                pgd_test_type_str = " (Original Prompts)" if self.use_original_prompt_for_pgd_test else ""
+                print(f"PGD Accuracy (Test{pgd_test_type_str}): {acc_attacked:.4f} (Best PGD{pgd_test_type_str}: {self.best_accuracy_pgd:.4f})")
             elif self.pgd_config["enabled"]:
                  print("PGD Accuracy (Test): Skipped (no best prompt yet)")
             elif not self.pgd_config["enabled"]:
@@ -376,16 +389,40 @@ class PromptCLIP_Shallow:
         original_parallel_state = self.parallel
         self.parallel = self.text_encoder.parallel = self.image_encoder.parallel = False # Ensure non-parallel for testing
 
-        text_features = self.text_encoder(self.best_prompt_text)
-        text_features = text_features / text_features.norm(dim=-1,keepdim=True)
+        # text_features = self.text_encoder(self.best_prompt_text)
+        # text_features = text_features / text_features.norm(dim=-1,keepdim=True)
 
         desc = "Testing Clean"
         is_attack_test = False
+        current_text_features = None
+        current_image_prompt_for_test = None
+        
         if attack_config and attack_config.get("enabled", False):
-             desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
-             is_attack_test = True
+            desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
+            is_attack_test = True
 
+            if self.pgd_original_prompt:
+                desc += " (Original Prompts)"
+                current_text_features = self.get_original_text_features()
+                current_image_prompt_for_test = None
+            else:
+                desc += " (Tuned Prompts)"
+                if self.best_prompt_text is None or self.best_prompt_image is None:
+                    print("Warning: Tuned PGD test skipped as best prompts are not available.")
+                    return torch.tensor(0, 0)
+                current_text_features = self.text_encoder(self.best_prompt_text)
+                current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)
+                current_image_prompt_for_test = self.best_prompt_image
+            if self.best_prompt_text is None or self.best_prompt_image is None:
+                print("Warning: Clean test skipped as best prompts are not available.")
+                return torch.tensor(0.0)
+            current_text_features = self.text_encoder(self.best_prompt_text)
+            current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)
+            current_image_prompt_for_test = self.best_prompt_image
 
+        if current_text_features is None:
+            return torch.tensor(0.0)
+        
         for batch in tqdm(self.test_loader, desc=desc, leave=False):
             image,label = self.parse_batch(batch) 
             total += image.size(0)
@@ -394,14 +431,14 @@ class PromptCLIP_Shallow:
 
             if is_attack_test:
                 with torch.enable_grad():
-                    eval_image = self._pgd_attack(image, label, text_features, self.best_prompt_image, attack_config)
+                    eval_image = self._pgd_attack(image, label, current_text_features, current_image_prompt_for_test, attack_config)
                 eval_image = eval_image.to(self.dtype)
 
-            image_features = self.image_encoder(eval_image, self.best_prompt_image)
+            image_features = self.image_encoder(eval_image, current_image_prompt_for_test)
             image_features = image_features / image_features.norm(dim=-1,keepdim=True)
 
             logit_scale = self.logit_scale.exp()
-            logits = logit_scale*image_features@text_features.t()
+            logits = logit_scale*image_features@current_text_features.t()
             prediction = logits.argmax(dim=-1)
             correct += (prediction == label).float().sum()
 

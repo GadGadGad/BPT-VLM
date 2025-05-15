@@ -19,8 +19,8 @@ from model.analysis_utils import Analysis_Util
 __classification__ = ["CIFAR100","CIFAR10","CIFAR10_PGD","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
-__dataset__ = "/kaggle/working/BPT-VLM/dataset"
-__output__ = "/kaggle/working/BPT-VLM/dataset/result"
+__dataset__ = "/kaggle/working/dataset"
+__output__ = "/kaggle/working/dataset/result"
 # __output__ = "/home/yu/result"
 # __backbone__ = "ViT-B/32"
 
@@ -31,6 +31,7 @@ parser.add_argument("--parallel", action='store_true', help='Whether to allow pa
 parser.add_argument("--backbone", default="ViT-B/32", type=str)
 parser.add_argument("--pgd_test", action='store_true', help='Enable PGD Attack during final testing')
 parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial Training')
+parser.add_argument("--pgd_original_prompt", action='store_true', help='Use original CLIP prompts for PGD testing instead of tuned ones')
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
@@ -57,6 +58,8 @@ else:
 if 'pgd' not in cfg:
     cfg['pgd'] = {}
 cfg['pgd']['enabled'] = args.pgd_test
+cfg['pgd']['original_prompt'] = args.pgd_original_prompt
+
 if 'adv_train' not in cfg:
     cfg['adv_train'] = {}
 cfg['adv_train']['enabled'] = args.adv_train
@@ -254,8 +257,9 @@ logger.info(f"Final Clean Accuracy: {final_acc_clean:.4f}")
 final_acc_pgd = torch.tensor(0.0)
 if cfg['pgd']['enabled']:
     if prompt_clip.best_prompt_text is not None:
+        pgd_test_type_str = " (Original Prompts)" if cfg['pgd']['test_original_prompt'] else ""
         final_acc_pgd = prompt_clip.test(attack_config=prompt_clip.pgd_config)
-        logger.info(f"Final PGD Accuracy  : {final_acc_pgd:.4f}")
+        logger.info(f"Final PGD Accuracy{pgd_test_type_str}  : {final_acc_pgd:.4f}")
     else:
         logger.info("Final PGD Accuracy  : Skipped (no best prompt available)")
         final_acc_pgd = None 
