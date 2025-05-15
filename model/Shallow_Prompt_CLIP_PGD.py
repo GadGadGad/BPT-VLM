@@ -291,7 +291,7 @@ class PromptCLIP_Shallow:
         if self.num_call % self.test_every == 0:
             print(f"\n--- Testing at call {self.num_call} (Prompts optimized with {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss) ---")
             acc_clean = self.test(attack_config=None)
-            self.acc.append(acc_clean.item()) # Store clean accuracy
+            self.acc.append(acc_clean.item()) 
             self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
             print(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
 
@@ -301,7 +301,7 @@ class PromptCLIP_Shallow:
                 acc_attacked = self.test(attack_config=self.pgd_config)
                 self.acc_pgd.append(acc_attacked.item()) 
                 self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
-                pgd_test_type_str = " (Original Prompts)" if self.use_original_prompt_for_pgd_test else ""
+                pgd_test_type_str = " (Original Prompts)" if self.pgd_original_prompt else ""
                 print(f"PGD Accuracy (Test{pgd_test_type_str}): {acc_attacked:.4f} (Best PGD{pgd_test_type_str}: {self.best_accuracy_pgd:.4f})")
             elif self.pgd_config["enabled"]:
                  print("PGD Accuracy (Test): Skipped (no best prompt yet)")
@@ -389,15 +389,12 @@ class PromptCLIP_Shallow:
         original_parallel_state = self.parallel
         self.parallel = self.text_encoder.parallel = self.image_encoder.parallel = False # Ensure non-parallel for testing
 
-        # text_features = self.text_encoder(self.best_prompt_text)
-        # text_features = text_features / text_features.norm(dim=-1,keepdim=True)
-
         desc = "Testing Clean"
         is_attack_test = False
         current_text_features = None
         current_image_prompt_for_test = None
         
-        if attack_config and attack_config.get("enabled", False):
+        if attack_config is not None and attack_config.get("enabled", False):
             desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
             is_attack_test = True
 
@@ -419,7 +416,10 @@ class PromptCLIP_Shallow:
             current_text_features = self.text_encoder(self.best_prompt_text)
             current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)
             current_image_prompt_for_test = self.best_prompt_image
-
+        else:
+            current_text_features = self.text_encoder(self.best_prompt_text)
+            current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)
+            current_image_prompt_for_test = self.best_prompt_image
         if current_text_features is None:
             return torch.tensor(0.0)
         
