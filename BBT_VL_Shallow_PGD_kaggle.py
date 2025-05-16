@@ -258,7 +258,7 @@ logger.info(f"Final Clean Accuracy: {final_acc_clean:.4f}")
 final_acc_pgd = torch.tensor(0.0)
 if cfg['pgd']['enabled']:
     if prompt_clip.best_prompt_text is not None:
-        pgd_test_type_str = " (Original Prompts)" if cfg['pgd']['test_original_prompt'] else ""
+        pgd_test_type_str = " (Original Prompts)" if cfg['pgd']['original_prompt'] else ""
         final_acc_pgd = prompt_clip.test(attack_config=prompt_clip.pgd_config)
         logger.info(f"Final PGD Accuracy{pgd_test_type_str}  : {final_acc_pgd:.4f}")
     else:
