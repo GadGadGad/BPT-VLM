@@ -69,11 +69,12 @@ output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir) # Ensure directory exists before logging setup
 
 # Define base filename structure (used for both log and pth files)
-fname_base = "{}_{}_{}_advOpt{}".format(
+fname_base = "{}_{}_{}_advOpt{}_pgdOrg{}".format(
     args.task_name,
     cfg["opt_name"],
     cfg["backbone"].replace("/", "-"),
-    cfg["adv_train"]["enabled"] # Use the actual boolean value from config
+    cfg["adv_train"]["enabled"],
+    cfg["pgd"]["original_prompt"],
 )
 log_filename = fname_base + ".log"
 log_filepath = os.path.join(output_dir, log_filename)
