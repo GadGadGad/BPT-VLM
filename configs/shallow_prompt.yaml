@@ -4,14 +4,6 @@ n_prompt_tokens_V: 5
 loss_type: "ce"
 intrinsic_dim_L: 500
 intrinsic_dim_V: 500
-pgd:
-  epsilon: 0.031 
-  alpha: 0.007  
-  num_iter: 20  
-adv_train:
-  epsilon: 0.031 
-  alpha: 0.007  
-  num_iter: 10
 sigma: 1
 k_shot: 16
 seed: 42
