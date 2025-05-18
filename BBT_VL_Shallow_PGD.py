@@ -144,7 +144,6 @@ opt_cfg = {
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
     'n_individuals': cfg["popsize"],
-    # 'is_restart': cfg.get('is_restart', False) # Uncomment if needed by algorithm
 }
 
 # --- Load Algorithm ---

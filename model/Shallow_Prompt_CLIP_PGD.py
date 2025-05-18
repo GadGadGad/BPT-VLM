@@ -11,6 +11,8 @@ from model.shallow_encoder import TextEncoder,VisionEncoder
 from model.analysis_utils import Analysis_Util
 from dataset.general import load_train,load_test
 from tqdm import tqdm
+import logging
+logger= logging.getLogger(__name__)
 
 class PromptCLIP_Shallow:
     def __init__(self,task_name,cfg):
@@ -35,25 +37,25 @@ class PromptCLIP_Shallow:
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
         self.load_dataset()
         if self.adv_train_config["enabled"]:
-            print("--- Adversarial Prompt Optimization ENABLED ---")
+            logger.info("--- Adversarial Prompt Optimization ENABLED ---")
             if "epsilon" not in self.adv_train_config: self.adv_train_config["epsilon"] = 8/255
-            if "alpha" not in self.adv_train_config: self.adv_train_config["alpha"] = 8/255/4
+            if "alpha" not in self.adv_train_config: self.adv_train_config["alpha"] = self.adv_train_config["epsilon"] / 4 
             if "num_iter" not in self.adv_train_config: self.adv_train_config["num_iter"] = 10
-            print(f"  Training PGD Config: Epsilon={self.adv_train_config['epsilon']}, Alpha={self.adv_train_config['alpha']}, Iter={self.adv_train_config['num_iter']}")
-            print(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0.")
+            logger.info(f"  Training PGD Config: Epsilon={self.adv_train_config['epsilon']}, Alpha={self.adv_train_config['alpha']}, Iter={self.adv_train_config['num_iter']}")
+            logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0.")
         else:
-            print("--- Standard (Clean) Prompt Optimization ---")
+            logger.info("--- Standard (Clean) Prompt Optimization ---")
         if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
-            print("PGD Testing ENABLED.")
+            logger.info("PGD Testing ENABLED.")
             mean = self.preprocess.transforms[-1].mean
             std = self.preprocess.transforms[-1].std
             self.norm_mean = torch.tensor(mean).to(self.device).view(3, 1, 1)
             self.norm_std = torch.tensor(std).to(self.device).view(3, 1, 1)
             self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
             self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
-            print(f"  Test PGD Config: Epsilon={self.pgd_config.get('epsilon', 'N/A')}, Alpha={self.pgd_config.get('alpha', 'N/A')}, Iter={self.pgd_config.get('num_iter', 'N/A')}")
+            logger.info(f"  Test PGD Config: Epsilon={self.pgd_config.get('epsilon', 'N/A')}, Alpha={self.pgd_config.get('alpha', 'N/A')}, Iter={self.pgd_config.get('num_iter', 'N/A')}")
         else:
-            print("PGD Testing DISABLED.")
+            logger.info("PGD Testing DISABLED.")
         # -----------------------------------------
 
         # Text Encoder
@@ -89,7 +91,7 @@ class PromptCLIP_Shallow:
         std_hat = np.std(embedding.reshape(-1).detach().cpu().numpy())
         mu = 0.0
         std = std_hat / (np.sqrt(self.intrinsic_dim_L) * self.sigma)
-        print('[Embedding] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
+        logger.info('[Embedding] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
         for p in self.linear_L.parameters():
             torch.nn.init.normal_(p, mu, std)
         # Vision Linear Layer
@@ -101,7 +103,7 @@ class PromptCLIP_Shallow:
         #mu = 0.0
         mu = mu_hat*3072/self.intrinsic_dim_V
         std = std_hat * np.sqrt(3072/self.intrinsic_dim_V) * self.sigma
-        print('[Conv] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
+        logger.info('[Conv] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
         for p in self.linear_V.parameters():
             torch.nn.init.normal_(p, mu, std)
 
@@ -285,15 +287,15 @@ class PromptCLIP_Shallow:
             
             self.best_prompt_text = current_prompt_text.detach().clone()
             self.best_prompt_image = current_prompt_image.detach().clone()
-            print(f"*** New best {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
+            logger.info(f"*** New best {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
 
 
         if self.num_call % self.test_every == 0:
-            print(f"\n--- Testing at call {self.num_call} (Prompts optimized with {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss) ---")
+            logger.info(f"\n--- Testing at call {self.num_call} (Prompts optimized with {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss) ---")
             acc_clean = self.test(attack_config=None)
             self.acc.append(acc_clean.item()) 
             self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
-            print(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
+            logger.info(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
 
             
             acc_attacked = torch.tensor(0.0) 
@@ -302,19 +304,21 @@ class PromptCLIP_Shallow:
                 self.acc_pgd.append(acc_attacked.item()) 
                 self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
                 pgd_test_type_str = " (Original Prompts)" if self.pgd_original_prompt else ""
-                print(f"PGD Accuracy (Test{pgd_test_type_str}): {acc_attacked:.4f} (Best PGD{pgd_test_type_str}: {self.best_accuracy_pgd:.4f})")
+                logger.info(f"PGD Accuracy (Test{pgd_test_type_str}): {acc_attacked:.4f} (Best PGD{pgd_test_type_str}: {self.best_accuracy_pgd:.4f})")
             elif self.pgd_config["enabled"]:
-                 print("PGD Accuracy (Test): Skipped (no best prompt yet)")
+                 logger.info("PGD Accuracy (Test): Skipped (no best prompt yet)")
             elif not self.pgd_config["enabled"]:
-                 print("PGD Accuracy (Test): Disabled in config")
+                 logger.info("PGD Accuracy (Test): Disabled in config")
 
 
             #---------------save_results-----------------------------------
             output_dir = os.path.join(self.output_dir,self.task_name)
-            fname = "{}_{}_{}_advOpt{}.pth".format(
+            fname = "{}_{}_{}_advTrain{}_advTest{}_pgdOrg{}.pth".format(
                 self.task_name, self.opt_name, self.backbone.replace("/","-"),
-                self.adv_train_config["enabled"] 
-            )
+                self.adv_train_config["enabled"],
+                self.pgd_config["enabled"],
+                self.pgd_original_prompt,
+            ) 
 
             content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
                        "best_accuracy":self.best_accuracy, "acc":self.acc,
@@ -403,15 +407,15 @@ class PromptCLIP_Shallow:
                 current_text_features = self.get_original_text_features()
                 current_image_prompt_for_test = None
             else:
-                desc += " (Tuned Prompts)"
+                desc += " (Current Best Tuned Prompts)"
                 if self.best_prompt_text is None or self.best_prompt_image is None:
-                    print("Warning: Tuned PGD test skipped as best prompts are not available.")
+                    logger.warning("Tuned PGD test skipped as best prompts are not available.")
                     return torch.tensor(0, 0)
                 current_text_features = self.text_encoder(self.best_prompt_text)
                 current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)
                 current_image_prompt_for_test = self.best_prompt_image
             if self.best_prompt_text is None or self.best_prompt_image is None:
-                print("Warning: Clean test skipped as best prompts are not available.")
+                logger.warning("Clean test skipped as best prompts are not available.")
                 return torch.tensor(0.0)
             current_text_features = self.text_encoder(self.best_prompt_text)
             current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)

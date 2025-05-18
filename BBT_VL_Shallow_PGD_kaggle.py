@@ -32,6 +32,16 @@ parser.add_argument("--backbone", default="ViT-B/32", type=str)
 parser.add_argument("--pgd_test", action='store_true', help='Enable PGD Attack during final testing')
 parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial Training')
 parser.add_argument("--pgd_original_prompt", action='store_true', help='Use original CLIP prompts for PGD testing instead of tuned ones')
+
+pgd_group = parser.add_argument_group('PGD Attack Parameters (for testing)')
+pgd_group.add_argument('pgd_test_epsilon', type=float, default = 8/255, help='Epsilon for PGD attack')
+pgd_group.add_argument('pgd_test_alpha', type=float, default = 8/255/4, help='Alpha for PGD attack')
+pgd_group.add_argument('pgd_test_num_iter', type=int, default = 10, help='Number of iterations for PGD attack')
+
+adv_train_group = parser.add_argument_group('Adversarial Training Parameters (for optimization loss)')
+adv_train_group.add_argument("--adv_train_epsilon", type=float, default=None, help="PGD epsilon for adversarial training (e.g., 8/255)")
+adv_train_group.add_argument("--adv_train_alpha", type=float, default=None, help="PGD alpha/step size for adversarial training (e.g., 2/255 or eps/4)")
+adv_train_group.add_argument("--adv_train_num_iter", type=int, default=None, help="PGD number of iterations for adversarial training (e.g., 10)")
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
@@ -57,11 +67,17 @@ else:
 
 if 'pgd' not in cfg:
     cfg['pgd'] = {}
+cfg['pgd']['epsilon'] = args.pgd_test_epsilon
+cfg['pgd']['alpha'] = args.pgd_test_alpha
+cfg['pgd']['num_iter'] = args.pgd_test_num_iter
 cfg['pgd']['enabled'] = args.pgd_test
 cfg['pgd']['original_prompt'] = args.pgd_original_prompt
-
+    
 if 'adv_train' not in cfg:
     cfg['adv_train'] = {}
+cfg['adv_train']['epsilon'] = args.adv_train_epsilon
+cfg['adv_train']['alpha'] = args.adv_train_alpha
+cfg['adv_train']['num_iter'] = args.adv_train_num_iter
 cfg['adv_train']['enabled'] = args.adv_train
 
 # --- Determine Output Directory and Base Filename ---
@@ -69,11 +85,12 @@ output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir) # Ensure directory exists before logging setup
 
 # Define base filename structure (used for both log and pth files)
-fname_base = "{}_{}_{}_advOpt{}_pgdOrg{}".format(
+fname_base = "{}_{}_{}_advTrain{}_pgdTest{}_pgdOrg{}".format(
     args.task_name,
     cfg["opt_name"],
     cfg["backbone"].replace("/", "-"),
     cfg["adv_train"]["enabled"],
+    cfg["pgd"]["enabled"],
     cfg["pgd"]["original_prompt"],
 )
 log_filename = fname_base + ".log"
@@ -172,11 +189,22 @@ logger.info(f"Optimizer: {args.opt}")
 logger.info(f'Population Size: {cfg["popsize"]}')
 logger.info(f"Using Backbone: {cfg['backbone']}")
 logger.info(f"Parallel Evaluation during Search: {cfg['parallel']}")
-logger.info(f"Adversarial Training (PGD during optimization): {cfg['adv_train']['enabled']}")
-logger.info(f"PGD Attack during Final Test: {cfg['pgd']['enabled']}")
 logger.info(f"Device: {device}")
 logger.info(f"Intrinsic Dimensions: L={intrinsic_dim_L}, V={intrinsic_dim_V}")
 logger.info(f"Budget: {opt_cfg['budget']}")
+logger.info(f"Adversarial Training (PGD during optimization): {cfg['adv_train']['enabled']}")
+if cfg['adv_train']['enabled']:
+    adv_eps_cfg = cfg['adv_train'].get('epsilon', "Default in PromptCLIP")
+    adv_alpha_cfg = cfg['adv_train'].get('alpha', "Default in PromptCLIP")
+    adv_iter_cfg = cfg['adv_train'].get('num_iter', "Default in PromptCLIP")
+    logger.info(f"  Adv. Training Params (from cfg): Epsilon={adv_eps_cfg}, Alpha={adv_alpha_cfg}, Iter={adv_iter_cfg}")
+logger.info(f"PGD Attack during Final Test: {cfg['pgd']['enabled']}")
+if cfg['pgd']['enabled']:
+    pgd_eps_cfg = cfg['pgd'].get('epsilon', "Default in PromptCLIP")
+    pgd_alpha_cfg = cfg['pgd'].get('alpha', "Default in PromptCLIP")
+    pgd_iter_cfg = cfg['pgd'].get('num_iter', "Default in PromptCLIP")
+    pgd_orig_cfg = cfg['pgd'].get('original_prompt', False) # Already from args
+    logger.info(f"  PGD Test Params (from cfg): Epsilon={pgd_eps_cfg}, Alpha={pgd_alpha_cfg}, Iter={pgd_iter_cfg}, OriginalPrompt={pgd_orig_cfg}")
 
 
 # --- Black-box prompt tuning ---
