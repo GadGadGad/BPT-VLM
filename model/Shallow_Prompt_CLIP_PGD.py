@@ -42,7 +42,8 @@ class PromptCLIP_Shallow:
             if "alpha" not in self.adv_train_config: self.adv_train_config["alpha"] = self.adv_train_config["epsilon"] / 4 
             if "num_iter" not in self.adv_train_config: self.adv_train_config["num_iter"] = 10
             logger.info(f"  Training PGD Config: Epsilon={self.adv_train_config['epsilon']}, Alpha={self.adv_train_config['alpha']}, Iter={self.adv_train_config['num_iter']}")
-            logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0.")
+            logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0." if not self.adv_train_config['all_step'] else 
+                         "  Adversarial tuning will occur for the whole progress.")
         else:
             logger.info("--- Standard (Clean) Prompt Optimization ---")
         if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
@@ -185,9 +186,11 @@ class PromptCLIP_Shallow:
         self.num_call += 1
         is_current_eval_adversarial = False
         if self.adv_train_config["enabled"]:
-            if self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0): # Ensure test_every is positive
+            if self.adv_train_config["all_step"]:
                 is_current_eval_adversarial = True
-        
+            elif self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0): # Ensure test_every is positive
+                is_current_eval_adversarial = True
+
         loss = 0
         logit_scale = self.logit_scale.exp()
 

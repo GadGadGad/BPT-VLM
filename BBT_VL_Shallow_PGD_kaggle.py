@@ -42,6 +42,7 @@ adv_train_group = parser.add_argument_group('Adversarial Training Parameters (fo
 adv_train_group.add_argument("--adv_train_epsilon", type=float, default=None, help="PGD epsilon for adversarial training (e.g., 8/255)")
 adv_train_group.add_argument("--adv_train_alpha", type=float, default=None, help="PGD alpha/step size for adversarial training (e.g., 2/255 or eps/4)")
 adv_train_group.add_argument("--adv_train_num_iter", type=int, default=None, help="PGD number of iterations for adversarial training (e.g., 10)")
+adv_train_group.add_argument("--adv_train_all", action='store_true', help="Use PGD Adv Tuning for every steps.")
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
@@ -79,7 +80,7 @@ cfg['adv_train']['epsilon'] = args.adv_train_epsilon
 cfg['adv_train']['alpha'] = args.adv_train_alpha
 cfg['adv_train']['num_iter'] = args.adv_train_num_iter
 cfg['adv_train']['enabled'] = args.adv_train
-
+cfg['adv_train']['all_step'] = args.adv_train_all
 # --- Determine Output Directory and Base Filename ---
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir) # Ensure directory exists before logging setup
