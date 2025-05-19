@@ -290,8 +290,10 @@ class PromptCLIP_Shallow:
             
             self.best_prompt_text = current_prompt_text.detach().clone()
             self.best_prompt_image = current_prompt_image.detach().clone()
-            logger.info(f"*** New best {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
-
+            if self.num_call % self.test_every == 0:
+                logger.info(f"*** New best {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
+            else:
+                logger.info(f"*** New best loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
 
         if self.num_call % self.test_every == 0:
             logger.info(f"\n--- Testing at call {self.num_call} (Prompts optimized with {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss) ---")
