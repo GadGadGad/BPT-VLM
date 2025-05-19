@@ -313,8 +313,9 @@ class PromptCLIP_Shallow:
 
             #---------------save_results-----------------------------------
             output_dir = os.path.join(self.output_dir,self.task_name)
-            fname = "{}_{}_{}_advTrain{}_advTest{}_pgdOrg{}.pth".format(
+            fname = "{}_{}_{}_parallel{}_advTrain{}_advTest{}_pgdOrg{}.pth".format(
                 self.task_name, self.opt_name, self.backbone.replace("/","-"),
+                self.parallel,
                 self.adv_train_config["enabled"],
                 self.pgd_config["enabled"],
                 self.pgd_original_prompt,

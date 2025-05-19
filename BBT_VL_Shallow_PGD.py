@@ -85,10 +85,11 @@ output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir) # Ensure directory exists before logging setup
 
 # Define base filename structure (used for both log and pth files)
-fname_base = "{}_{}_{}_advTrain{}_pgdTest{}_pgdOrg{}".format(
+fname_base = "{}_{}_{}_parallel{}_advTrain{}_pgdTest{}_pgdOrg{}".format(
     args.task_name,
     cfg["opt_name"],
     cfg["backbone"].replace("/", "-"),
+    args.parallel,
     cfg["adv_train"]["enabled"],
     cfg["pgd"]["enabled"],
     cfg["pgd"]["original_prompt"],
