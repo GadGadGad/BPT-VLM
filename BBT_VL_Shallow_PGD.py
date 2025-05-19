@@ -43,6 +43,8 @@ adv_train_group.add_argument("--adv_train_epsilon", type=float, default=None, he
 adv_train_group.add_argument("--adv_train_alpha", type=float, default=None, help="PGD alpha/step size for adversarial training (e.g., 2/255 or eps/4)")
 adv_train_group.add_argument("--adv_train_num_iter", type=int, default=None, help="PGD number of iterations for adversarial training (e.g., 10)")
 adv_train_group.add_argument("--adv_train_all", action='store_true', help="Use PGD Adv Tuning for every steps.")
+
+parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
@@ -58,6 +60,7 @@ cfg["data_dir"] = __dataset__
 cfg["output_dir"] = __output__
 cfg["backbone"] = args.backbone
 cfg["parallel"] = args.parallel
+cfg["maximize_loss"] = args.maximize_loss
 
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
@@ -94,6 +97,7 @@ fname_base = "{}_{}_{}_parallel{}_advTrain{}_pgdTest{}_pgdOrg{}".format(
     cfg["adv_train"]["enabled"],
     cfg["pgd"]["enabled"],
     cfg["pgd"]["original_prompt"],
+    cfg["maximize_loss"]
 )
 log_filename = fname_base + ".log"
 log_filepath = os.path.join(output_dir, log_filename)
@@ -193,6 +197,7 @@ logger.info(f"Using Backbone: {cfg['backbone']}")
 logger.info(f"Parallel Evaluation during Search: {cfg['parallel']}")
 logger.info(f"Device: {device}")
 logger.info(f"Intrinsic Dimensions: L={intrinsic_dim_L}, V={intrinsic_dim_V}")
+logger.info(f"Optimization Objective: {'Maximize' if cfg['maximize_loss'] else 'Minimize'} Loss")
 logger.info(f"Budget: {opt_cfg['budget']}")
 logger.info(f"Adversarial Training (PGD during optimization): {cfg['adv_train']['enabled']}")
 if cfg['adv_train']['enabled']:
@@ -266,8 +271,8 @@ else: # Handle non-PyPop optimizers (like the assumed shallow_cma)
 
             # Log progress periodically based on number of calls
             if prompt_clip.num_call % (cfg["popsize"] * opt_cfg['verbose_frequency']) == 0:
-                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Min Loss: {prompt_clip.min_loss:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}, Best PGD Acc: {prompt_clip.best_accuracy_pgd:.4f}")
-
+                 log_loss_label = "Maximized Loss" if prompt_clip.maximize_loss else "Minimized Loss"
+                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}): {prompt_clip.best_objective_loss_value:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}, Best PGD Acc: {prompt_clip.best_accuracy_pgd:.4f}")
     else:
         logger.warning(f"Non-PyPop optimizer path not fully defined for task {args.task_name}")
         # Handle non-classification tasks if needed
