@@ -312,6 +312,8 @@ content = {
     "best_accuracy": prompt_clip.best_accuracy, "acc": prompt_clip.acc,
     "best_accuracy_pgd": prompt_clip.best_accuracy_pgd, "acc_pgd": prompt_clip.acc_pgd,
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
+    "best_objective_loss_value": prompt_clip.best_objective_loss_value,
+    "maximize_loss_setting": prompt_clip.maximize_loss,
     "loss": prompt_clip.loss, "num_call": prompt_clip.num_call,
     "final_acc_clean": final_acc_clean.item(),
     "final_acc_pgd": final_acc_pgd.item() if isinstance(final_acc_pgd, torch.Tensor) else final_acc_pgd,

@@ -26,7 +26,7 @@ class PromptCLIP_Shallow:
         self.batch_size = cfg["batch_size"]
         self.k_shot = cfg["k_shot"]
         self.seed = cfg["seed"]
-        self.num_call = 0
+        self.num_call = 0 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
         self.loss = []
@@ -36,13 +36,21 @@ class PromptCLIP_Shallow:
         self.pgd_original_prompt = self.pgd_config.get("original_prompt", False)
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
         self.load_dataset()
+
+        self.maximize_loss = cfg.get("maximize_loss", False)
+        self.best_objective_loss_value = None 
+        if self.maximize_loss:
+            self.best_objective_loss_value = -float('inf')
+            logger.info(f"--- Prompt Optimization Mode: MAXIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
+        else:
+            self.best_objective_loss_value = float('inf')
+            logger.info(f"--- Prompt Optimization Mode: MINIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
+
         if self.adv_train_config["enabled"]:
             logger.info("--- Adversarial Prompt Optimization ENABLED ---")
-            if "epsilon" not in self.adv_train_config: self.adv_train_config["epsilon"] = 8/255
-            if "alpha" not in self.adv_train_config: self.adv_train_config["alpha"] = self.adv_train_config["epsilon"] / 4 
-            if "num_iter" not in self.adv_train_config: self.adv_train_config["num_iter"] = 10
+            # Defaults for adv_train_config are now set in main script if None
             logger.info(f"  Training PGD Config: Epsilon={self.adv_train_config['epsilon']}, Alpha={self.adv_train_config['alpha']}, Iter={self.adv_train_config['num_iter']}")
-            logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0." if not self.adv_train_config['all_step'] else 
+            logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0." if not self.adv_train_config.get('all_step',False) else 
                          "  Adversarial tuning will occur for the whole progress.")
         else:
             logger.info("--- Standard (Clean) Prompt Optimization ---")
@@ -79,9 +87,8 @@ class PromptCLIP_Shallow:
         self.dtype = self.model.dtype
         self.best_prompt_text = None
         self.best_prompt_image = None
-        self.best_accuracy = 0
-        self.best_accuracy_pgd = 0
-        self.min_loss = None
+        self.best_accuracy = 0.0 # Ensure float
+        self.best_accuracy_pgd = 0.0 # Ensure float
         self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize
         self.sigma = cfg["sigma"]
         # Lauguage Linear Layer
@@ -182,30 +189,34 @@ class PromptCLIP_Shallow:
     
     @torch.no_grad()
     def eval(self, prompt_zip):
-        prompt_text_list, prompt_image_list = prompt_zip[0], prompt_zip[1] 
+        prompt_text_list_or_tensor, prompt_image_list_or_tensor = prompt_zip[0], prompt_zip[1]
         self.num_call += 1
         is_current_eval_adversarial = False
         if self.adv_train_config["enabled"]:
-            if self.adv_train_config["all_step"]:
+            if self.adv_train_config.get("all_step", False):
                 is_current_eval_adversarial = True
             elif self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0): # Ensure test_every is positive
                 is_current_eval_adversarial = True
 
-        loss = 0
+        loss_accumulator = 0 # Will be scalar or list of positive losses
         logit_scale = self.logit_scale.exp()
+
+        # For non-parallel case, these hold the single prompt tensors being evaluated
+        current_prompt_text_for_eval_single = None
+        current_prompt_image_for_eval_single = None
 
         if self.parallel:
             # text_features: [popsize * n_cls, D]
-            text_features = self.text_encoder(prompt_text_list)
+            loss_accumulator = [0.0] * self.popsize # list for population losses
+            text_features = self.text_encoder(prompt_text_list_or_tensor) # list of prompt tensors
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             pop_txt_features = text_features.view(self.popsize, self.n_cls, -1)
-            loss = [0.0] * self.popsize
         else:
             # text_features: [n_cls, D]
-            text_features = self.text_encoder(prompt_text_list)
+            text_features = self.text_encoder(prompt_text_list_or_tensor) # single prompt tensor
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            current_prompt_text = prompt_text_list
-            current_prompt_image = prompt_image_list
+            current_prompt_text_for_eval_single = prompt_text_list_or_tensor
+            current_prompt_image_for_eval_single = prompt_image_list_or_tensor
 
 
         for batch in self.train_loader:
@@ -219,7 +230,7 @@ class PromptCLIP_Shallow:
 
                 for i in range(self.popsize):
                     current_txt_features = pop_txt_features[i] # [n_cls, D]
-                    current_img_prompt = prompt_image_list[i] # [n_prompt_tok_V, D_V]
+                    current_img_prompt = prompt_image_list_or_tensor[i] # list of prompt tensors
                     current_clean_images = pop_clean_image[i] # [B, C, H, W]
 
                     # Determine image input for this population member
@@ -244,7 +255,7 @@ class PromptCLIP_Shallow:
                     image_features_i = image_features_i / image_features_i.norm(dim=-1, keepdim=True) # [B, D]
 
                     tmp_logits = logit_scale * image_features_i @ current_txt_features.t() # [B, n_cls]
-                    loss[i] += self.metric(tmp_logits, label).item() 
+                    loss_accumulator[i] += self.metric(tmp_logits, label).item() 
 
             else:
                 current_clean_images = clean_image # [B, C, H, W]
@@ -255,60 +266,85 @@ class PromptCLIP_Shallow:
                             images=current_clean_images,
                             labels=label,
                             text_features=text_features,
-                            image_prompt=current_prompt_image,
+                            image_prompt=current_prompt_image_for_eval_single,
                             config=self.adv_train_config
                         )
                      eval_image = eval_image.to(self.dtype)
                 else:
                      eval_image = current_clean_images.to(self.dtype)
 
-                image_features = self.image_encoder(eval_image, current_prompt_image)
+                image_features = self.image_encoder(eval_image, current_prompt_image_for_eval_single)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
                 logits = logit_scale * image_features @ text_features.t()
-                loss += self.metric(logits, label).item() 
+                loss_accumulator += self.metric(logits, label).item() 
 
-        epoch_min_loss = float('inf')
-        best_idx_in_batch = -1
+        # Normalize accumulated loss(es); 'loss_values_final' are positive.
+        if self.parallel:
+            loss_values_final = [x / len(self.train_data) for x in loss_accumulator]
+        else:
+            loss_values_final = loss_accumulator / len(self.train_data)
+
+        # Determine the best candidate loss from the current evaluation and corresponding prompts
+        epoch_best_loss_in_eval = None
+        prompt_candidate_text = None
+        prompt_candidate_image = None
 
         if self.parallel:
-            loss = [x / len(self.train_data) for x in loss]
-            epoch_min_loss = min(loss)
-            best_idx_in_batch = loss.index(epoch_min_loss)
-
-            current_prompt_text = prompt_text_list[best_idx_in_batch]
-            current_prompt_image = prompt_image_list[best_idx_in_batch]
-        else:
-            loss /= len(self.train_data)
-            epoch_min_loss = loss
-            best_idx_in_batch = 0 
-
-        self.loss.append(loss) 
-
-        if self.min_loss is None or epoch_min_loss < self.min_loss:
-            self.min_loss = epoch_min_loss
-            
-            self.best_prompt_text = current_prompt_text.detach().clone()
-            self.best_prompt_image = current_prompt_image.detach().clone()
-            if self.num_call % self.test_every == 0:
-                logger.info(f"*** New best {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
+            if self.maximize_loss:
+                epoch_best_loss_in_eval = max(loss_values_final)
+                best_idx_in_eval = loss_values_final.index(epoch_best_loss_in_eval)
             else:
-                logger.info(f"*** New best loss found: {self.min_loss:.4f} (at call {self.num_call}) ***")
+                epoch_best_loss_in_eval = min(loss_values_final)
+                best_idx_in_eval = loss_values_final.index(epoch_best_loss_in_eval)
+            
+            prompt_candidate_text = prompt_text_list_or_tensor[best_idx_in_eval]
+            prompt_candidate_image = prompt_image_list_or_tensor[best_idx_in_eval]
+        else: # Not parallel
+            epoch_best_loss_in_eval = loss_values_final
+            prompt_candidate_text = current_prompt_text_for_eval_single
+            prompt_candidate_image = current_prompt_image_for_eval_single
+        
+        # Append actual positive loss(es) to self.loss history
+        if self.parallel:
+            self.loss.append([l for l in loss_values_final]) 
+        else:
+            self.loss.append(loss_values_final) 
 
-        if self.num_call % self.test_every == 0:
-            logger.info(f"\n--- Testing at call {self.num_call} (Prompts optimized with {'adversarial' if self.adv_train_config['enabled'] else 'clean'} loss) ---")
+        # Update overall best objective loss value and prompts
+        update_overall_best = False
+        if self.maximize_loss:
+            if epoch_best_loss_in_eval > self.best_objective_loss_value:
+                update_overall_best = True
+        else: # Minimize loss
+            if epoch_best_loss_in_eval < self.best_objective_loss_value:
+                update_overall_best = True
+        
+        if update_overall_best:
+            self.best_objective_loss_value = epoch_best_loss_in_eval
+            if prompt_candidate_text is not None and prompt_candidate_image is not None:
+                self.best_prompt_text = prompt_candidate_text.detach().clone()
+                self.best_prompt_image = prompt_candidate_image.detach().clone()
+            
+            objective_type_str = "maximized" if self.maximize_loss else "minimized"
+            adv_status_str = "adversarial" if is_current_eval_adversarial else "clean"
+            logger.info(f"*** New best {objective_type_str} ({adv_status_str} eval) loss found: {self.best_objective_loss_value:.4f} (at call {self.num_call}) ***")
+
+        if self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0):
+            eval_loss_type_str = "adversarial" if is_current_eval_adversarial else "clean"
+            obj_str = "maximize" if self.maximize_loss else "minimize"
+            logger.info(f"\n--- Testing at call {self.num_call} (Prompts from {eval_loss_type_str} eval, objective: {obj_str} loss) ---")
             acc_clean = self.test(attack_config=None)
             self.acc.append(acc_clean.item()) 
             self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
             logger.info(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
-
             
             acc_attacked = torch.tensor(0.0) 
             if self.pgd_config["enabled"] and self.best_prompt_text is not None:
                 acc_attacked = self.test(attack_config=self.pgd_config)
                 self.acc_pgd.append(acc_attacked.item()) 
                 self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
-                pgd_test_type_str = " (Original Prompts)" if self.pgd_original_prompt else ""
+                pgd_test_type_str = " (Original Prompts)" if self.pgd_config.get("original_prompt", False) else ""
                 logger.info(f"PGD Accuracy (Test{pgd_test_type_str}): {acc_attacked:.4f} (Best PGD{pgd_test_type_str}: {self.best_accuracy_pgd:.4f})")
             elif self.pgd_config["enabled"]:
                  logger.info("PGD Accuracy (Test): Skipped (no best prompt yet)")
@@ -318,25 +354,34 @@ class PromptCLIP_Shallow:
 
             #---------------save_results-----------------------------------
             output_dir = os.path.join(self.output_dir,self.task_name)
-            fname = "{}_{}_{}_parallel{}_advTrain{}_advTest{}_pgdOrg{}.pth".format(
+            fname = "{}_{}_{}_parallel{}_advTrain{}_pgdTest{}_pgdOrg{}_maxLoss{}.pth".format(
                 self.task_name, self.opt_name, self.backbone.replace("/","-"),
                 self.parallel,
                 self.adv_train_config["enabled"],
                 self.pgd_config["enabled"],
-                self.pgd_original_prompt,
+                self.pgd_config.get("original_prompt", False),
+                self.maximize_loss
             ) 
 
             content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
                        "best_accuracy":self.best_accuracy, "acc":self.acc,
                        "best_accuracy_pgd": self.best_accuracy_pgd, "acc_pgd": self.acc_pgd,
                        "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
-                       "loss":self.loss,"num_call":self.num_call,
+                       "historical_losses":self.loss, 
+                       "best_objective_loss_value": self.best_objective_loss_value,
+                       "maximize_loss_setting": self.maximize_loss,
+                       "num_call":self.num_call,
                        "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict(),
                        "pgd_config_test": self.pgd_config, 
                        "adv_train_config": self.adv_train_config}
             Analysis_Util.save_results(content,output_dir,fname)
 
-        return loss
+        # Return value for the optimizer (optimizer always minimizes)
+        if self.parallel:
+            return_value = [l * -1 if self.maximize_loss else l for l in loss_values_final]
+        else:
+            return_value = loss_values_final * -1 if self.maximize_loss else loss_values_final
+        return return_value
 
 
     def _pgd_attack(self, images, labels, text_features, image_prompt, config):
@@ -353,7 +398,7 @@ class PromptCLIP_Shallow:
         delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images
         delta.data = delta.data.to(images.dtype)
 
-        for _ in range(num_iter):
+        for _ in tqdm(range(num_iter), desc='Running PGD Attack', leave=False): # Added leave=False
             delta.requires_grad_(True)
             perturbed_image = (images + delta).to(self.dtype)
 
@@ -392,7 +437,7 @@ class PromptCLIP_Shallow:
     def test(self, attack_config=None):
         """ Evaluate accuracy, optionally with PGD attack using TEST config """
         if self.best_prompt_text is None or self.best_prompt_image is None:
-            return torch.tensor(0.0)
+            return torch.tensor(0.0) # Return float tensor
 
         correct = 0.
         total = 0.
@@ -408,30 +453,27 @@ class PromptCLIP_Shallow:
             desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
             is_attack_test = True
 
-            if self.pgd_original_prompt:
+            if self.pgd_config.get("original_prompt", False): # Use from pgd_config
                 desc += " (Original Prompts)"
                 current_text_features = self.get_original_text_features()
-                current_image_prompt_for_test = None
+                current_image_prompt_for_test = None # Original CLIP does not use image prompts
             else:
                 desc += " (Current Best Tuned Prompts)"
-                if self.best_prompt_text is None or self.best_prompt_image is None:
+                if self.best_prompt_text is None or self.best_prompt_image is None: # Re-check for tuned PGD
                     logger.warning("Tuned PGD test skipped as best prompts are not available.")
-                    return torch.tensor(0, 0)
+                    return torch.tensor(0.0) # Return float tensor
                 current_text_features = self.text_encoder(self.best_prompt_text)
                 current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)
                 current_image_prompt_for_test = self.best_prompt_image
-            if self.best_prompt_text is None or self.best_prompt_image is None:
-                logger.warning("Clean test skipped as best prompts are not available.")
-                return torch.tensor(0.0)
+        else: # Clean test or if attack_config is None/disabled
+            if self.best_prompt_text is None or self.best_prompt_image is None: # For clean test too
+                logger.warning(f"{'Clean' if not is_attack_test else 'Tuned PGD'} test skipped as best prompts are not available.")
+                return torch.tensor(0.0) # Return float tensor
             current_text_features = self.text_encoder(self.best_prompt_text)
             current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)
             current_image_prompt_for_test = self.best_prompt_image
-        else:
-            current_text_features = self.text_encoder(self.best_prompt_text)
-            current_text_features = current_text_features / current_text_features.norm(dim=-1,keepdim=True)
-            current_image_prompt_for_test = self.best_prompt_image
-        if current_text_features is None:
-            return torch.tensor(0.0)
+        # if current_text_features is None: # This check is implicitly handled above
+        #     return torch.tensor(0.0)
         
         for batch in tqdm(self.test_loader, desc=desc, leave=False):
             image,label = self.parse_batch(batch) 
