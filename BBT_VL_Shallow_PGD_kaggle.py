@@ -34,9 +34,9 @@ parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial
 parser.add_argument("--pgd_original_prompt", action='store_true', help='Use original CLIP prompts for PGD testing instead of tuned ones')
 
 pgd_group = parser.add_argument_group('PGD Attack Parameters (for testing)')
-pgd_group.add_argument('pgd_test_epsilon', type=float, default = 8/255, help='Epsilon for PGD attack')
-pgd_group.add_argument('pgd_test_alpha', type=float, default = 8/255/4, help='Alpha for PGD attack')
-pgd_group.add_argument('pgd_test_num_iter', type=int, default = 10, help='Number of iterations for PGD attack')
+pgd_group.add_argument('--pgd_test_epsilon', type=float, default = 8/255, help='Epsilon for PGD attack')
+pgd_group.add_argument('--pgd_test_alpha', type=float, default = 8/255/4, help='Alpha for PGD attack')
+pgd_group.add_argument('--pgd_test_num_iter', type=int, default = 10, help='Number of iterations for PGD attack')
 
 adv_train_group = parser.add_argument_group('Adversarial Training Parameters (for optimization loss)')
 adv_train_group.add_argument("--adv_train_epsilon", type=float, default=None, help="PGD epsilon for adversarial training (e.g., 8/255)")
