@@ -19,8 +19,8 @@ from model.analysis_utils import Analysis_Util
 __classification__ = ["CIFAR100","CIFAR10","CIFAR10_PGD","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
-__dataset__ = "./dataset"
-__output__ = "./dataset/result"
+__dataset__ = "/kaggle/working/dataset"
+__output__ = "/kaggle/working/dataset/result"
 # __output__ = "/home/yu/result"
 # __backbone__ = "ViT-B/32"
 
