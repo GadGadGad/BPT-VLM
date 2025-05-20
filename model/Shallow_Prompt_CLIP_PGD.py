@@ -398,7 +398,7 @@ class PromptCLIP_Shallow:
         delta.data = torch.clamp(images + delta.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images
         delta.data = delta.data.to(images.dtype)
 
-        for _ in tqdm(range(num_iter), desc='Running PGD Attack', leave=False): # Added leave=False
+        for _ in range(num_iter):
             delta.requires_grad_(True)
             perturbed_image = (images + delta).to(self.dtype)
 
