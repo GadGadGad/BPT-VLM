@@ -389,9 +389,9 @@ class PromptCLIP_Shallow:
         images = images.clone().detach()
         labels = labels.clone().detach() 
 
-        epsilon = config['epsilon']
-        alpha = config['alpha']
-        num_iter = config['num_iter']
+        epsilon = self.adv_train_config['epsilon']
+        alpha = self.adv_train_config['epsilon']
+        num_iter = self.adv_train_config['epsilon']
 
         delta = torch.zeros_like(images, requires_grad=True, device=self.device).to(images.dtype)
         delta.data.uniform_(-epsilon, epsilon)
