@@ -384,14 +384,14 @@ class PromptCLIP_Shallow:
         return return_value
 
 
-    def _pgd_attack(self, images, labels, text_features, image_prompt, config):
+    def _pgd_attack(self, images, labels, text_features, image_prompt):
         """ Performs PGD attack """
         images = images.clone().detach()
         labels = labels.clone().detach() 
 
         epsilon = self.adv_train_config['epsilon']
-        alpha = self.adv_train_config['epsilon']
-        num_iter = self.adv_train_config['epsilon']
+        alpha = self.adv_train_config['alpha']
+        num_iter = self.adv_train_config['num_iter']
 
         delta = torch.zeros_like(images, requires_grad=True, device=self.device).to(images.dtype)
         delta.data.uniform_(-epsilon, epsilon)
