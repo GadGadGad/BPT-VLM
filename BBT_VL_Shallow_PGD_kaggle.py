@@ -39,9 +39,9 @@ pgd_group.add_argument('--pgd_test_alpha', type=float, default = 8/255/4, help='
 pgd_group.add_argument('--pgd_test_num_iter', type=int, default = 10, help='Number of iterations for PGD attack')
 
 adv_train_group = parser.add_argument_group('Adversarial Training Parameters (for optimization loss)')
-adv_train_group.add_argument("--adv_train_epsilon", type=float, default=None, help="PGD epsilon for adversarial training (e.g., 8/255)")
-adv_train_group.add_argument("--adv_train_alpha", type=float, default=None, help="PGD alpha/step size for adversarial training (e.g., 2/255 or eps/4)")
-adv_train_group.add_argument("--adv_train_num_iter", type=int, default=None, help="PGD number of iterations for adversarial training (e.g., 10)")
+adv_train_group.add_argument("--adv_train_epsilon", type=float, default=8/255, help="PGD epsilon for adversarial training (e.g., 8/255)")
+adv_train_group.add_argument("--adv_train_alpha", type=float, default=8/255/4, help="PGD alpha/step size for adversarial training (e.g., 2/255 or eps/4)")
+adv_train_group.add_argument("--adv_train_num_iter", type=int, default=10, help="PGD number of iterations for adversarial training (e.g., 10)")
 adv_train_group.add_argument("--adv_train_all", action='store_true', help="Use PGD Adv Tuning for every steps.")
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')

@@ -402,7 +402,6 @@ class PromptCLIP_Shallow:
             delta.requires_grad_(True)
             perturbed_image = (images + delta).to(self.dtype)
 
-
             original_im_parallel = self.image_encoder.parallel
             self.image_encoder.parallel = False
 
