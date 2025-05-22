@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 import numpy as np
-
-# ... (TextEncoder class remains the same) ...
 class TextEncoder(nn.Module):
     def __init__(self, clip_model):
         super().__init__()
@@ -24,6 +22,10 @@ class TextEncoder(nn.Module):
             self.init_pattern_embedding = self.init_pattern_embedding.repeat(self.pop_size,1,1)
             self.tokenized_pattern_prompts = self.tokenized_pattern_prompts.repeat(self.pop_size,1)
 
+
+
+
+
     def incorporate_prompt(self, prompt, embedding):
         prefix = embedding[:, :1, :]
         suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :]
@@ -38,7 +40,6 @@ class TextEncoder(nn.Module):
             dim=1,
         )
         return x
-
     def incorporate_prompt_parallel(self,prompt,embedding):
         prefix = embedding[:, :1, :] # (n_cls * popsize, 1, dim)
         suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :] # (n_cls * popsize, 1, dim)
@@ -75,98 +76,86 @@ class TextEncoder(nn.Module):
             x = x[torch.arange(x.shape[0]), self.tokenized_pattern_prompts.argmax(dim=-1)] @ self.text_projection
         else:
             x = x[torch.arange(x.shape[0]), self.tokenized_pattern_prompts[:self.n_cls].argmax(dim=-1)] @ self.text_projection
-        return x
 
+        return x
 
 class VisionEncoder(nn.Module):
     def __init__(self, clip_model):
         super().__init__()
         self.input_resolution = clip_model.visual.input_resolution
         self.patch_size = clip_model.visual.patch_size
-        self.prefix_len = (self.input_resolution//self.patch_size)**2+1 # Number of CLS token + patch tokens
+        self.prefix_len = (self.input_resolution//self.patch_size)**2+1
         self.output_dim = clip_model.visual.output_dim
         self.conv1 = clip_model.visual.conv1
         self.width = clip_model.visual.width
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.class_embedding = clip_model.visual.class_embedding
         self.positional_embedding = clip_model.visual.positional_embedding
+        # scale = self.width ** -0.5
+        # positional_embedding = scale*torch.randn((self.input_resolution//self.patch_size)**2+1+n_prompt_tokens_V,self.width)
+        # self.positional_embedding = nn.Parameter(positional_embedding,)
         self.ln_pre = clip_model.visual.ln_pre
-        self.tranformer = clip_model.visual.transformer # Typo: should be 'transformer'
+        self.tranformer = clip_model.visual.transformer
         self.ln_post = clip_model.visual.ln_post
         self.proj = clip_model.visual.proj
-        if hasattr(clip_model.visual, 'transformer'):
-            self.transformer_layer = clip_model.visual.transformer
-
-
     def set_context(self,context):
         self.n_prompt_tokens_V = context["n_prompt_tokens_V"]
         self.batch_size = context["batch_size"] # original batch size
         self.parallel = context["parallel"]
         self.pop_size = context["pop_size"]
 
-    def incorporate_prompt(self, prompt, embedding):
-        if prompt is None: # If no visual prompt is provided
-            return embedding # Return the embeddings unmodified
 
+
+
+    def incorporate_prompt(self,prompt,embedding):
+        if prompt is None:
+            return embedding
         B = embedding.shape[0]
-        # Original logic to append prompt tokens:
-        expanded_prompt = prompt.expand(B, -1, -1) # This is now safe
+        # after CLS token, all before image patches
         embedding = torch.cat((
-            embedding[:, :self.prefix_len, :], # All original tokens (CLS + patches)
-            expanded_prompt,                   # Append the visual prompt tokens
-        ), dim=1)
+            embedding[:,:self.prefix_len,:],
+            prompt.expand(B,-1,-1),
+        ),dim=1)
+        # [batch_size,cls_token + n_prompts_V + n_patches, hidden_dim]
         return embedding
 
-    def incorporate_prompt_parallel(self, prompt_list, embedding): # Renamed 'prompt' to 'prompt_list'
-        # embedding: (batch_size*popsize, num_original_tokens, width)
-        # prompt_list: list of prompt tensors, one for each population member; can contain None
-        B_per_member = int(embedding.shape[0] / self.pop_size)
-        processed_embeddings_list = []
+    def incorporate_prompt_parallel(self,prompt,embedding):
+        # embedding: (batch_size*popsize, *, *)
+        B = int(embedding.shape[0]/self.pop_size)
+        x = []
+        for index, pt in enumerate(prompt):
+            start = index * B
+            tmp_embedding = embedding[start:start+B]
+            tmp_embedding= torch.cat((
+                tmp_embedding[:, :self.prefix_len, :],
+                pt.expand(B, -1, -1),
+            ), dim=1)
+            x.append(tmp_embedding)
+        x = torch.cat(x, dim=0)
+        return x
 
-        for index, pt_member in enumerate(prompt_list): # pt_member is the prompt for one population member
-            start_idx = index * B_per_member
-            end_idx = start_idx + B_per_member
-            current_member_embeddings = embedding[start_idx:end_idx, :, :]
 
-            if pt_member is None: # If this population member has no visual prompt
-                processed_embeddings_list.append(current_member_embeddings)
-            else:
-                # This member has a visual prompt
-                expanded_pt_member = pt_member.expand(B_per_member, -1, -1) # This is now safe
-                # Concatenate original tokens with this member's visual prompt tokens
-                embedding_with_prompt = torch.cat((
-                    current_member_embeddings[:, :self.prefix_len, :],
-                    expanded_pt_member,
-                ), dim=1)
-                processed_embeddings_list.append(embedding_with_prompt)
-        
-        final_embeddings = torch.cat(processed_embeddings_list, dim=0)
-        return final_embeddings
 
-    def forward(self, x, prompt): # x is image, prompt is image_prompt (tensor or list of tensors)
-        x = self.conv1(x)
-        x = x.reshape(x.shape[0], x.shape[1], -1)
-        x = x.permute(0, 2, 1)
-        # Add class token
-        class_emb_expanded = self.class_embedding.to(x.dtype).expand(x.shape[0], -1, -1)
-        x = torch.cat([class_emb_expanded, x], dim=1)
-        # Add positional embedding
+
+    def forward(self, x, prompt):
+
+        x = self.conv1(x)  # serial: (batch_size, width, grid, grid) parallel: (batch_size * popsize, width, grid, grid)
+
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        # shape = [*, grid ** 2 + 1, width]
+        x = torch.cat([self.class_embedding.to(x.dtype) +
+                       torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)
         x = x + self.positional_embedding.to(x.dtype)
-
-        # Incorporate visual prompt(s)
         if self.parallel:
-            x = self.incorporate_prompt_parallel(prompt, x)
+            x = self.incorporate_prompt_parallel(prompt,x)
         else:
-            x = self.incorporate_prompt(prompt, x)
-        
+            x = self.incorporate_prompt(prompt,x)
         x = self.ln_pre(x)
-        x = x.permute(1, 0, 2) # NLD -> LND
-        x = self.transformer_layer(x) # Use the corrected attribute name
-        x = x.permute(1, 0, 2) # LND -> NLD
-        
-        # Get CLS token output
-        x = self.ln_post(x[:, 0, :]) 
-        
+        x = x.permute(1,0,2)
+        x = self.tranformer(x)
+        x = x.permute(1,0,2)
+        x = self.ln_post(x[:,0,:])
         if self.proj is not None:
-            x = x @ self.proj
+            x = x@self.proj
         return x
