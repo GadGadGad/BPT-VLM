@@ -121,6 +121,7 @@ class VisionEncoder(nn.Module):
 
     def incorporate_prompt_parallel(self,prompt,embedding):
         # embedding: (batch_size*popsize, *, *)
+        if prompt is None: return embedding
         B = int(embedding.shape[0]/self.pop_size)
         x = []
         for index, pt in enumerate(prompt):
