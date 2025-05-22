@@ -39,7 +39,7 @@ adv_train_group = parser.add_argument_group('Adversarial Training Parameters (fo
 adv_train_group.add_argument("--adv_train_epsilon", type=float, default=4/255, help="PGD epsilon for adversarial training (e.g., 4/255 or 8/255)")
 adv_train_group.add_argument("--adv_train_alpha", type=float, default=1/255, help="PGD alpha/step size for adversarial training (e.g., eps/4)")
 adv_train_group.add_argument("--adv_train_num_iter", type=int, default=7, help="PGD number of iterations for adversarial training (e.g., 10)")
-adv_train_group.add_argument("--adv_train_all", action='store_true', help="Use PGD Adv Tuning for every steps.")
+adv_train_group.add_argument("--adv_train_all", action='store_true', help="Use PGD Adv Tuning for whole process.")
 adv_train_group.add_argument("--adv_train_attack_prompt_type", type=str, default="on-the-fly", choices=["constant", "on-the-fly", "perturbed"], help="Strategy for selecting text prompt during adversarial example generation for training loss.")
 adv_train_group.add_argument("--adv_train_alpha_text_prompt", type=float, default=0.01, help="PGD alpha/step size for perturbing text prompt itself (if adv_train_attack_prompt_type is 'perturbed')")
 
