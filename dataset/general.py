@@ -81,8 +81,6 @@ class FewshotDataset(Dataset):
         return new_train_data,classes
 
 
-
-
 def load_train(batch_size=1,seed=42,shots=16,preprocess=None,root=None,dataset_dir=None):
     args = {"shots":shots,"preprocess":preprocess,"root":root,"dataset_dir":dataset_dir,"seed":seed}
     train_data = FewshotDataset(args)
