@@ -230,10 +230,6 @@ class PromptCLIP_Shallow:
             pop_txt_features = torch.stack(all_pop_text_features) # [pop_size, n_cls, D]
 
             if is_current_eval_adversarial and self.adv_train_attack_prompt_type == "constant":
-                # For parallel + constant, we need one set of attack text features, used by all pop members
-                # Note: This assumes the "constant" prompt is class-agnostic in its structure or uses a fixed template.
-                # If the constant prompt structure were different per population member, this would need adjustment.
-                # For simplicity here, we use the standard `get_original_text_features()` which is class-specific.
                 text_features_for_attack_generation = self.get_original_text_features()
         else:
             # `prompt_text_list_or_tensor` is a single prompt tensor
@@ -247,9 +243,8 @@ class PromptCLIP_Shallow:
                 if self.adv_train_attack_prompt_type == "constant":
                     text_features_for_attack_generation = self.get_original_text_features()
                 elif self.adv_train_attack_prompt_type == "on-the-fly":
-                    text_features_for_attack_generation = text_features # Use current learnable prompt's features
+                    text_features_for_attack_generation = text_features
                 elif self.adv_train_attack_prompt_type == "perturbed":
-                    # For perturbed, attack uses current text_features initially, then text prompt itself is perturbed.
                     text_features_for_attack_generation = text_features
                     text_prompt_for_attack_generation_perturbed = current_prompt_text_for_eval_single.clone().detach()
 
@@ -290,11 +285,6 @@ class PromptCLIP_Shallow:
                                 text_prompt_to_perturb=current_text_prompt_for_pgd_gen_perturbed if self.adv_train_attack_prompt_type == "perturbed" else None
                             )
                         eval_image_i = eval_image_i.to(self.dtype)
-                        # For "perturbed", the text prompt used for the final loss might also be the perturbed one if that's the desired behavior.
-                        # Here, we assume the final loss uses the original candidate learnable prompt for consistency,
-                        # and the "perturbed" attack's goal was to find a strong image attack using a (temporarily) perturbed text prompt.
-                        # If the paper implies the *final loss* uses the perturbed text prompt, `current_txt_features_for_loss` would need to be re-derived.
-                        # For simplicity, we keep the loss on the original candidate prompt but attack was made harder.
                     else:
                         eval_image_i = current_clean_images.to(self.dtype)
 
