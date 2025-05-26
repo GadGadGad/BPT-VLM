@@ -407,8 +407,8 @@ class PromptCLIP_Shallow:
 
             output_dir = os.path.join(self.output_dir,self.task_name)
             adv_train_attack_prompt_type_str = f"_advPromptGen{self.adv_train_attack_prompt_type}" if self.adv_train_config["enabled"] else ""
-            fname = "{}_{}_{}_parallel{}_advTrain{}{}_pgdTest{}_pgdOrg{}_maxLoss{}.pth".format(
-                self.task_name, self.opt_name, self.backbone.replace("/","-"),
+            fname = "{}{}_{}_{}_parallel{}_advTrain{}{}_pgdTest{}_pgdOrg{}_maxLoss{}.pth".format(
+                self.k_shot, self.task_name, self.opt_name, self.backbone.replace("/","-"),
                 self.parallel,
                 self.adv_train_config["enabled"],
                 adv_train_attack_prompt_type_str,

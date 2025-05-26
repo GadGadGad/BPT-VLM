@@ -4,7 +4,6 @@ import os
 import numpy as np
 from torchvision.datasets import CIFAR100
 from torch.utils.data import Dataset, DataLoader
-import argparse
 #---------------------------------------------- device:cpu dtype:float32-----------------------------------------------
 
 

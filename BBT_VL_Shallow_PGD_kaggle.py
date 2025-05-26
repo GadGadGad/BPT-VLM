@@ -26,6 +26,7 @@ parser.add_argument("--task_name", default="CIFAR100", type=str)
 parser.add_argument("--opt", default="shallow_cma", type=str)
 parser.add_argument("--parallel", action='store_true', help='Whether to allow parallel evaluation')
 parser.add_argument("--backbone", default="ViT-B/32", type=str)
+parser.add_argument("--k_shot", default=16, type=int, help='How many shot to use')
 parser.add_argument("--pgd_test", action='store_true', help='Enable PGD Attack during final testing')
 parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial Training')
 parser.add_argument("--pgd_original_prompt", action='store_true', help='Use original CLIP prompts for PGD testing instead of tuned ones')
@@ -60,6 +61,7 @@ cfg["output_dir"] = __output__
 cfg["backbone"] = args.backbone
 cfg["parallel"] = args.parallel
 cfg["maximize_loss"] = args.maximize_loss
+cfg["k_shot"] = args.k_shot
 
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
@@ -90,7 +92,8 @@ output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir)
 
 adv_train_attack_prompt_type_str_fn = f"_advPromptGen{cfg['adv_train']['attack_prompt_type']}" if cfg['adv_train']['enabled'] else ""
-fname_base = "{}_{}_{}_parallel{}_advTrain{}{}_pgdTest{}_pgdOrg{}_maxLoss{}".format(
+fname_base = "{}{}_{}_{}_parallel{}_advTrain{}{}_pgdTest{}_pgdOrg{}_maxLoss{}".format(
+    cfg["k_shot"],
     args.task_name,
     cfg["opt_name"],
     cfg["backbone"].replace("/", "-"),
@@ -285,6 +288,7 @@ final_results_path = os.path.join(output_dir, pth_filename)
 
 content = {
     "task_name": args.task_name, "opt_name": cfg["opt_name"], "backbone": cfg["backbone"],
+    "k_shot": cfg["k_shot"],
     "best_accuracy": prompt_clip.best_accuracy, "acc": prompt_clip.acc,
     "best_accuracy_pgd": prompt_clip.best_accuracy_pgd, "acc_pgd": prompt_clip.acc_pgd,
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
