@@ -20,13 +20,10 @@ class TextEncoder(nn.Module):
         self.pop_size = context["pop_size"]
         if self.parallel:
             self.init_pattern_embedding = self.init_pattern_embedding.repeat(self.pop_size,1,1)
-            self.tokenized_pattern_prompts = self.tokenized_pattern_prompts.repeat(self.pop_size,1)
-
-
-
-
-
+      
     def incorporate_prompt(self, prompt, embedding):
+        if prompt is None:
+            return embedding
         prefix = embedding[:, :1, :]
         suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :]
         if prompt.dim() == 2:
@@ -41,6 +38,8 @@ class TextEncoder(nn.Module):
         )
         return x
     def incorporate_prompt_parallel(self,prompt,embedding):
+        if prompt is None:
+            return embedding
         prefix = embedding[:, :1, :] # (n_cls * popsize, 1, dim)
         suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :] # (n_cls * popsize, 1, dim)
         x = []
@@ -105,8 +104,6 @@ class VisionEncoder(nn.Module):
         self.pop_size = context["pop_size"]
 
 
-
-
     def incorporate_prompt(self,prompt,embedding):
         if prompt is None:
             return embedding
@@ -121,7 +118,8 @@ class VisionEncoder(nn.Module):
 
     def incorporate_prompt_parallel(self,prompt,embedding):
         # embedding: (batch_size*popsize, *, *)
-        if prompt is None: return embedding
+        if prompt is None:
+            return embedding
         B = int(embedding.shape[0]/self.pop_size)
         x = []
         for index, pt in enumerate(prompt):
