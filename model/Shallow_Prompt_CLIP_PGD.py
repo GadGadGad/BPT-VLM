@@ -654,7 +654,6 @@ class PromptCLIP_Shallow:
         # current_text_prompt_raw_for_attack_test = None # Not used in current test pgd logic
 
         if attack_config is not None and attack_config.get("enabled", False):
-            desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
             is_attack_test = True
 
             if self.pgd_config.get("original_prompt", False):
@@ -662,7 +661,6 @@ class PromptCLIP_Shallow:
                 current_text_features_for_test = self.get_original_text_features()
                 current_image_prompt_for_test = None # No visual prompt for original CLIP text prompts
             else: # Use tuned prompts
-                desc += " (Current Best Tuned Prompts)"
                 if self.best_prompt_text is None or self.best_prompt_image is None: # Should have been caught above
                     logger.warning("Tuned PGD test skipped as best prompts are not available.")
                     self.text_encoder.parallel = original_text_encoder_parallel
@@ -682,7 +680,7 @@ class PromptCLIP_Shallow:
             current_image_prompt_for_test = self.best_prompt_image
 
 
-        for batch in tqdm(self.test_loader, desc=desc, leave=False):
+        for batch in self.test_loader:
             # parse_batch is called here with self.parallel potentially being True or False based on cfg["parallel"]
             # For testing, we typically want non-parallel data processing per batch.
             # Let's ensure parse_batch is called in a "single sample" mode for test consistency.
