@@ -43,6 +43,7 @@ adv_train_group.add_argument("--adv_train_num_iter", type=int, default=10, help=
 adv_train_group.add_argument("--adv_train_all", action='store_true', help="Use PGD Adv Tuning for whole process.")
 adv_train_group.add_argument("--adv_train_attack_prompt_type", type=str, default="on-the-fly", choices=["constant", "on-the-fly", "perturbed"], help="Strategy for selecting text prompt during adversarial example generation for training loss.")
 adv_train_group.add_argument("--adv_train_alpha_text_prompt", type=float, default=0.01, help="PGD alpha/step size for perturbing text prompt itself (if adv_train_attack_prompt_type is 'perturbed')")
+adv_train_group.add_argument("--adv_train_sample_ratio", type=float, default=1.0, help="Ratio of few-shot samples to apply PGD to during adversarial training (0.0 to 1.0). 1.0 means all samples.")
 
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
@@ -86,13 +87,16 @@ cfg['adv_train']['enabled'] = args.adv_train
 cfg['adv_train']['all_call'] = args.adv_train_all
 cfg['adv_train']['attack_prompt_type'] = args.adv_train_attack_prompt_type
 cfg['adv_train']['alpha_text_prompt'] = args.adv_train_alpha_text_prompt
+cfg['adv_train']['sample_ratio'] = args.adv_train_sample_ratio
 
 
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir)
 
 adv_train_attack_prompt_type_str_fn = f"_advPromptGen{cfg['adv_train']['attack_prompt_type']}" if cfg['adv_train']['enabled'] else ""
-fname_base = "{}{}_{}_{}_parallel{}_advTrain{}{}_pgdTest{}_pgdOrg{}_maxLoss{}".format(
+adv_train_sample_ratio_str_fn = f"_advSampleRatio{cfg['adv_train']['sample_ratio']}" if cfg['adv_train']['enabled'] and cfg['adv_train']['sample_ratio'] < 1.0 else ""
+
+fname_base = "{}{}_{}_{}_parallel{}_advTrain{}{}{}_pgdTest{}_pgdOrg{}_maxLoss{}".format(
     cfg["k_shot"],
     args.task_name,
     cfg["opt_name"],
@@ -100,6 +104,7 @@ fname_base = "{}{}_{}_{}_parallel{}_advTrain{}{}_pgdTest{}_pgdOrg{}_maxLoss{}".f
     args.parallel,
     cfg["adv_train"]["enabled"],
     adv_train_attack_prompt_type_str_fn,
+    adv_train_sample_ratio_str_fn,
     cfg["pgd"]["enabled"],
     cfg["pgd"]["original_prompt"],
     cfg["maximize_loss"]
@@ -197,7 +202,8 @@ if cfg['adv_train']['enabled']:
     adv_iter_cfg = cfg['adv_train'].get('num_iter', "Default in PromptCLIP")
     adv_attack_prompt_type_cfg = cfg['adv_train'].get('attack_prompt_type', 'on-the-fly')
     adv_alpha_text_prompt_cfg = cfg['adv_train'].get('alpha_text_prompt', 'N/A' if adv_attack_prompt_type_cfg != 'perturbed' else 'Default in PromptCLIP')
-    logger.info(f"  Adv. Training Params (from cfg): Epsilon={adv_eps_cfg}, Alpha_Img={adv_alpha_cfg}, Iter={adv_iter_cfg}")
+    adv_sample_ratio_cfg = cfg['adv_train'].get('sample_ratio', 1.0)
+    logger.info(f"  Adv. Training Params (from cfg): Epsilon={adv_eps_cfg}, Alpha_Img={adv_alpha_cfg}, Iter={adv_iter_cfg}, SampleRatio={adv_sample_ratio_cfg}")
     logger.info(f"  Adv. Training Attack Prompt Type: {adv_attack_prompt_type_cfg}")
     if adv_attack_prompt_type_cfg == 'perturbed':
         logger.info(f"  Adv. Training Alpha for Text Prompt Perturbation: {adv_alpha_text_prompt_cfg}")
@@ -256,7 +262,10 @@ else:
 
             if prompt_clip.num_call % (cfg["popsize"] * opt_cfg['verbose_frequency']) == 0:
                  log_loss_label = "Maximized Loss" if prompt_clip.maximize_loss else "Minimized Loss"
-                 adv_train_info_str = f" (AdvTrain: {prompt_clip.adv_train_config['enabled']}, AttackGen: {prompt_clip.adv_train_attack_prompt_type})" if prompt_clip.adv_train_config['enabled'] else ""
+                 adv_train_info_str = f" (AdvTrain: {prompt_clip.adv_train_config['enabled']}, AttackGen: {prompt_clip.adv_train_attack_prompt_type}"
+                 if prompt_clip.adv_train_config['enabled'] and prompt_clip.adv_train_config.get('sample_ratio', 1.0) < 1.0:
+                     adv_train_info_str += f", SampleRatio: {prompt_clip.adv_train_config.get('sample_ratio', 1.0)}"
+                 adv_train_info_str += ")" if prompt_clip.adv_train_config['enabled'] else ""
                  logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}{adv_train_info_str}): {prompt_clip.best_objective_loss_value:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}, Best PGD Acc: {prompt_clip.best_accuracy_pgd:.4f}")
     else:
         logger.warning(f"Non-PyPop optimizer path not fully defined for task {args.task_name}")

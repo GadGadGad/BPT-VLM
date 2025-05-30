@@ -2,13 +2,13 @@ backbone: "ViT-B/32"
 n_prompt_tokens_L: 8
 n_prompt_tokens_V: 5
 loss_type: "ce"
-intrinsic_dim_L: 500
-intrinsic_dim_V: 500
+intrinsic_dim_L: 250
+intrinsic_dim_V: 250
 sigma: 1
 k_shot: 16
 seed: 42
 bound: 0
-batch_size: 64
+batch_size: 128
 popsize: 30
 train_mode: true
 DTD:

@@ -24,7 +24,7 @@ class PromptCLIP_Shallow:
         self.output_dir = cfg["output_dir"]
         self.backbone = cfg["backbone"]
         self.popsize = cfg["popsize"]
-        self.parallel = cfg["parallel"]
+        self.parallel = cfg["parallel"] # This is cfg["parallel"] from main script, True if optimizer processes population in parallel
         self.batch_size = cfg["batch_size"]
         self.k_shot = cfg["k_shot"]
         self.seed = cfg["seed"]
@@ -37,7 +37,7 @@ class PromptCLIP_Shallow:
         self.pgd_config = cfg.get("pgd", {"enabled": False})
         self.pgd_original_prompt = self.pgd_config.get("original_prompt", False)
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
-        self.adv_train_attack_prompt_type = self.adv_train_config.get("attack_prompt_type", "on-the-fly") # New attribute
+        self.adv_train_attack_prompt_type = self.adv_train_config.get("attack_prompt_type", "on-the-fly")
 
         self.load_dataset()
 
@@ -57,23 +57,25 @@ class PromptCLIP_Shallow:
                         Alpha={self.adv_train_config['alpha']}, \
                         Iter={self.adv_train_config['num_iter']}")
             logger.info(f"  Adversarial Attack Prompt Type for Training: {self.adv_train_attack_prompt_type}")
+            logger.info(f"  Adversarial Training Sample Ratio: {self.adv_train_config.get('sample_ratio', 1.0)}")
             logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0." \
                 if not self.adv_train_config.get('all_call',False) else \
                 "  Adversarial tuning will occur for the whole progress.")
         else:
             logger.info("--- Standard (Clean) Prompt Optimization ---")
         if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
-            logger.info("PGD Testing ENABLED.")
+            logger.info("PGD Operations (Test or Train) ENABLED.")
             mean = self.preprocess.transforms[-1].mean
             std = self.preprocess.transforms[-1].std
             self.norm_mean = torch.tensor(mean).to(self.device).view(3, 1, 1)
             self.norm_std = torch.tensor(std).to(self.device).view(3, 1, 1)
             self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
             self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
-            logger.info(f"  Test PGD Config: \
-                        Epsilon={self.pgd_config.get('epsilon', 'N/A')},\
-                        Alpha={self.pgd_config.get('alpha', 'N/A')},\
-                        Iter={self.pgd_config.get('num_iter', 'N/A')}")
+            if self.pgd_config["enabled"]:
+                logger.info(f"  Test PGD Config: \
+                            Epsilon={self.pgd_config.get('epsilon', 'N/A')},\
+                            Alpha={self.pgd_config.get('alpha', 'N/A')},\
+                            Iter={self.pgd_config.get('num_iter', 'N/A')}")
         else:
             logger.info("PGD Testing DISABLED.")
         # -----------------------------------------
@@ -100,7 +102,7 @@ class PromptCLIP_Shallow:
         self.best_prompt_image = None
         self.best_accuracy = 0.0
         self.best_accuracy_pgd = 0.0
-        self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize
+        self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize # test_every is in terms of num_call
         self.sigma = cfg["sigma"]
         # Lauguage Linear Layer
         self.linear_L = torch.nn.Linear(self.intrinsic_dim_L, self.n_prompt_tokens_L * self.ctx_dim_L,
@@ -200,28 +202,30 @@ class PromptCLIP_Shallow:
     @torch.no_grad()
     def eval(self, prompt_zip):
         prompt_text_list_or_tensor, prompt_image_list_or_tensor = prompt_zip[0], prompt_zip[1]
-        self.num_call += 1
+        self.num_call += 1 # num_call increments per fitness evaluation (per population member if sequential, or per population if parallel)
+        
         is_current_eval_adversarial = False
         if self.adv_train_config["enabled"]:
             if self.adv_train_config.get("all_call", False):
                 is_current_eval_adversarial = True
+            # test_every is in terms of num_call. If parallel, num_call effectively increments once per generation.
+            # If sequential, num_call increments popsize times per generation.
+            # The current self.test_every is already adjusted based on self.parallel.
             elif self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0):
-                is_current_eval_adversarial = True
+                 is_current_eval_adversarial = True
+
 
         loss_accumulator = 0
         logit_scale = self.logit_scale.exp()
 
-        current_prompt_text_for_eval_single = None
-        current_prompt_image_for_eval_single = None
+        current_prompt_text_for_eval_single = None # Used if not self.parallel
+        current_prompt_image_for_eval_single = None # Used if not self.parallel
 
-        # Determine text features for attack generation if needed
-        text_features_for_attack_generation = None # For "constant" or "perturbed" during adv_train
-        text_prompt_for_attack_generation_perturbed = None # For "perturbed" specifically
+        text_features_for_attack_generation = None # For "constant" or "perturbed" during adv_train, common across batch/pop
+        text_prompt_for_attack_generation_perturbed = None # For "perturbed" specifically, used if not self.parallel
 
-        if self.parallel:
+        if self.parallel: # optimizer is evaluating a whole population
             loss_accumulator = [0.0] * self.popsize
-            # `prompt_text_list_or_tensor` is a list of prompt tensors for each member of population
-            # `text_features` will be [pop_size, n_cls, D]
             all_pop_text_features = []
             for p_text in prompt_text_list_or_tensor:
                 features = self.text_encoder(p_text)
@@ -231,9 +235,7 @@ class PromptCLIP_Shallow:
 
             if is_current_eval_adversarial and self.adv_train_attack_prompt_type == "constant":
                 text_features_for_attack_generation = self.get_original_text_features()
-        else:
-            # `prompt_text_list_or_tensor` is a single prompt tensor
-            # `text_features` will be [n_cls, D]
+        else: # optimizer is evaluating a single candidate
             text_features = self.text_encoder(prompt_text_list_or_tensor)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             current_prompt_text_for_eval_single = prompt_text_list_or_tensor
@@ -243,96 +245,198 @@ class PromptCLIP_Shallow:
                 if self.adv_train_attack_prompt_type == "constant":
                     text_features_for_attack_generation = self.get_original_text_features()
                 elif self.adv_train_attack_prompt_type == "on-the-fly":
-                    text_features_for_attack_generation = text_features
+                    text_features_for_attack_generation = text_features # Use current candidate's features
                 elif self.adv_train_attack_prompt_type == "perturbed":
-                    text_features_for_attack_generation = text_features
+                    text_features_for_attack_generation = text_features # Start with current candidate's features
                     text_prompt_for_attack_generation_perturbed = current_prompt_text_for_eval_single.clone().detach()
 
 
-        for batch in self.train_loader:
-            clean_image, label = self.parse_batch(batch)
-            if self.parallel:
-                B = label.shape[0]
-                pop_clean_image = clean_image.view(self.popsize, B, *clean_image.shape[1:])
+        for batch_idx, batch in enumerate(self.train_loader):
+            # `clean_image_orig` is [B_orig, C, H, W], `label_orig` is [B_orig]
+            clean_image_orig, label_orig = self.parse_batch(batch) # parse_batch does NOT repeat if self.parallel is False inside it
+                                                                # but self.parallel (class attr) is set by main script based on cfg["parallel"]
+
+            if self.parallel: # Population evaluation
+                # clean_image_orig from parse_batch would be [B_orig * popsize, C,H,W] if parse_batch used self.parallel=True
+                # Let's assume parse_batch returns [B,C,H,W] and we handle pop repetition here if needed
+                # The current parse_batch: if self.parallel (class attr) is true, it repeats.
+                # So clean_image_orig is [B_orig * popsize, C, H, W], label_orig is [B_orig]
+
+                B_actual_batch = label_orig.shape[0] # This is B_orig
+                
+                # Reshape clean_image_orig for per-population member processing
+                # clean_image_orig.shape[1:] gets (C,H,W), B_actual_batch is B_orig
+                # pop_clean_image_batch will be [popsize, B_orig, C, H, W]
+                pop_clean_image_batch = clean_image_orig.view(self.popsize, B_actual_batch, *clean_image_orig.shape[1:])
+
 
                 for i in range(self.popsize):
-                    # Text features for final loss calculation with current learnable prompt
-                    current_txt_features_for_loss = pop_txt_features[i]
-                    current_img_prompt_for_loss = prompt_image_list_or_tensor[i]
-                    current_clean_images = pop_clean_image[i]
-
-                    # Determine text features for PGD attack generation for this population member
-                    current_txt_features_for_pgd_gen = current_txt_features_for_loss # Default to on-the-fly
-                    current_text_prompt_for_pgd_gen_perturbed = prompt_text_list_or_tensor[i].clone().detach() if self.adv_train_attack_prompt_type == "perturbed" else None
+                    # For current population member i
+                    current_clean_images_for_member = pop_clean_image_batch[i] # [B_orig, C, H, W]
+                    current_labels_for_member = label_orig # [B_orig]
+                    current_txt_features_for_loss = pop_txt_features[i] # [n_cls, D] (tuned features for this member)
+                    current_img_prompt_for_loss = prompt_image_list_or_tensor[i] # Tuned image prompt for this member
+                    
+                    loss_for_member_batch_i = 0
 
                     if is_current_eval_adversarial:
+                        adv_sample_ratio = self.adv_train_config.get('sample_ratio', 1.0)
+                        num_total_samples_member = current_clean_images_for_member.size(0)
+
+                        # Determine text features/prompt for PGD attack generation for this member
+                        pgd_text_features_guidance = current_txt_features_for_loss # Default to on-the-fly for this pop member
+                        pgd_text_prompt_to_perturb = None
                         if self.adv_train_attack_prompt_type == "constant":
-                            # `text_features_for_attack_generation` was already prepared (same for all pop members if parallel)
-                            current_txt_features_for_pgd_gen = text_features_for_attack_generation
-                            current_text_prompt_for_pgd_gen_perturbed = None # Not applicable for constant
+                            pgd_text_features_guidance = text_features_for_attack_generation # Shared constant features
+                        elif self.adv_train_attack_prompt_type == "perturbed":
+                            # pgd_text_features_guidance remains current_txt_features_for_loss
+                            pgd_text_prompt_to_perturb = prompt_text_list_or_tensor[i].clone().detach()
 
-                        # Note: "on-the-fly" uses `current_txt_features_for_loss` by default
-                        # "perturbed" also starts with `current_txt_features_for_loss` for the PGD text features arg,
-                        # but the `_pgd_attack` function will handle perturbing the text prompt itself if `text_prompt_to_perturb` is passed.
 
-                        with torch.enable_grad():
-                            eval_image_i, _ = self._pgd_attack(
-                                images=current_clean_images,
-                                labels=label,
-                                text_features_for_attack=current_txt_features_for_pgd_gen, # Features used to guide image perturbation
-                                image_prompt=current_img_prompt_for_loss, # Image prompt for loss (and potentially attack if visual prompts were also perturbed)
-                                config=self.adv_train_config,
-                                text_prompt_to_perturb=current_text_prompt_for_pgd_gen_perturbed if self.adv_train_attack_prompt_type == "perturbed" else None
-                            )
-                        eval_image_i = eval_image_i.to(self.dtype)
-                    else:
-                        eval_image_i = current_clean_images.to(self.dtype)
+                        if adv_sample_ratio < 1.0 and num_total_samples_member > 0:
+                            num_adv_samples = int(num_total_samples_member * adv_sample_ratio)
+                            num_clean_samples = num_total_samples_member - num_adv_samples
 
-                    original_im_parallel = self.image_encoder.parallel
-                    self.image_encoder.parallel = False
-                    image_features_i = self.image_encoder(eval_image_i, current_img_prompt_for_loss)
-                    self.image_encoder.parallel = original_im_parallel
+                            adv_images_to_perturb = current_clean_images_for_member[:num_adv_samples]
+                            adv_labels = current_labels_for_member[:num_adv_samples]
+                            clean_images_part = current_clean_images_for_member[num_adv_samples:]
+                            clean_labels_part = current_labels_for_member[num_adv_samples:]
+                            
+                            perturbed_text_prompt_from_attack = None # For APT 'perturbed'
+                            if num_adv_samples > 0:
+                                with torch.enable_grad():
+                                    adv_images_perturbed, perturbed_text_prompt_from_attack = self._pgd_attack(
+                                        images=adv_images_to_perturb, labels=adv_labels,
+                                        text_features_for_attack=pgd_text_features_guidance,
+                                        image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
+                                        text_prompt_to_perturb=pgd_text_prompt_to_perturb
+                                    )
+                                adv_images_perturbed = adv_images_perturbed.to(self.dtype)
+                                
+                                text_features_for_adv_loss = current_txt_features_for_loss
+                                if self.adv_train_attack_prompt_type == "perturbed" and perturbed_text_prompt_from_attack is not None:
+                                    text_features_for_adv_loss = self.text_encoder(perturbed_text_prompt_from_attack)
+                                    text_features_for_adv_loss = text_features_for_adv_loss / text_features_for_adv_loss.norm(dim=-1, keepdim=True)
 
-                    image_features_i = image_features_i / image_features_i.norm(dim=-1, keepdim=True)
-                    tmp_logits = logit_scale * image_features_i @ current_txt_features_for_loss.t()
-                    loss_accumulator[i] += self.metric(tmp_logits, label).item()
-            else: # Not parallel
-                current_clean_images = clean_image
-                current_txt_features_for_loss = text_features # From the single candidate prompt
+                                adv_image_features = self.image_encoder(adv_images_perturbed, current_img_prompt_for_loss)
+                                adv_image_features = adv_image_features / adv_image_features.norm(dim=-1, keepdim=True)
+                                adv_logits = logit_scale * adv_image_features @ text_features_for_adv_loss.t()
+                                loss_for_member_batch_i += self.metric(adv_logits, adv_labels)
+
+                            if num_clean_samples > 0:
+                                clean_images_part_typed = clean_images_part.to(self.dtype)
+                                clean_image_features = self.image_encoder(clean_images_part_typed, current_img_prompt_for_loss)
+                                clean_image_features = clean_image_features / clean_image_features.norm(dim=-1, keepdim=True)
+                                # Clean part uses original text features of the current member
+                                clean_logits = logit_scale * clean_image_features @ current_txt_features_for_loss.t()
+                                loss_for_member_batch_i += self.metric(clean_logits, clean_labels_part)
+                        else: # Full adversarial batch for this member
+                            with torch.enable_grad():
+                                eval_image_i, perturbed_text_prompt_from_attack = self._pgd_attack(
+                                    images=current_clean_images_for_member, labels=current_labels_for_member,
+                                    text_features_for_attack=pgd_text_features_guidance,
+                                    image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
+                                    text_prompt_to_perturb=pgd_text_prompt_to_perturb
+                                )
+                            eval_image_i = eval_image_i.to(self.dtype)
+                            
+                            text_features_for_loss_i = current_txt_features_for_loss
+                            if self.adv_train_attack_prompt_type == "perturbed" and perturbed_text_prompt_from_attack is not None:
+                                text_features_for_loss_i = self.text_encoder(perturbed_text_prompt_from_attack)
+                                text_features_for_loss_i = text_features_for_loss_i / text_features_for_loss_i.norm(dim=-1, keepdim=True)
+
+                            image_features_i = self.image_encoder(eval_image_i, current_img_prompt_for_loss)
+                            image_features_i = image_features_i / image_features_i.norm(dim=-1, keepdim=True)
+                            tmp_logits = logit_scale * image_features_i @ text_features_for_loss_i.t()
+                            loss_for_member_batch_i += self.metric(tmp_logits, current_labels_for_member)
+                    else: # Clean evaluation for this member
+                        eval_image_i = current_clean_images_for_member.to(self.dtype)
+                        image_features_i = self.image_encoder(eval_image_i, current_img_prompt_for_loss)
+                        image_features_i = image_features_i / image_features_i.norm(dim=-1, keepdim=True)
+                        tmp_logits = logit_scale * image_features_i @ current_txt_features_for_loss.t()
+                        loss_for_member_batch_i += self.metric(tmp_logits, current_labels_for_member)
+                    
+                    loss_accumulator[i] += loss_for_member_batch_i.item() if isinstance(loss_for_member_batch_i, torch.Tensor) else loss_for_member_batch_i
+
+            else: # Not parallel (single candidate evaluation)
+                # clean_image_orig is [B_orig, C,H,W], label_orig is [B_orig] (from parse_batch with self.parallel=False)
+                current_clean_images = clean_image_orig
+                current_labels = label_orig
+                current_txt_features_for_loss = text_features # From current_prompt_text_for_eval_single
                 current_img_prompt_for_loss = current_prompt_image_for_eval_single
-
-                final_text_prompt_for_loss = current_prompt_text_for_eval_single
-                final_text_features_for_loss = current_txt_features_for_loss
+                
+                loss_for_candidate_batch = 0
 
                 if is_current_eval_adversarial:
-                    # `text_features_for_attack_generation` and `text_prompt_for_attack_generation_perturbed` were set earlier
-                    text_prompt_to_perturb_for_pgd = text_prompt_for_attack_generation_perturbed if self.adv_train_attack_prompt_type == "perturbed" else None
+                    adv_sample_ratio = self.adv_train_config.get('sample_ratio', 1.0)
+                    num_total_samples = current_clean_images.size(0)
 
-                    with torch.enable_grad():
-                        eval_image, perturbed_text_prompt_if_any = self._pgd_attack(
-                            images=current_clean_images,
-                            labels=label,
-                            text_features_for_attack=text_features_for_attack_generation, # Features guiding image attack
-                            image_prompt=current_img_prompt_for_loss,
-                            config=self.adv_train_config,
-                            text_prompt_to_perturb=text_prompt_to_perturb_for_pgd
-                        )
-                    eval_image = eval_image.to(self.dtype)
+                    # text_features_for_attack_generation and text_prompt_for_attack_generation_perturbed are already set
+                    
+                    if adv_sample_ratio < 1.0 and num_total_samples > 0:
+                        num_adv_samples = int(num_total_samples * adv_sample_ratio)
+                        num_clean_samples = num_total_samples - num_adv_samples
 
-                    if self.adv_train_attack_prompt_type == "perturbed" and perturbed_text_prompt_if_any is not None:
-                        # If APT implies the *final loss* is on the perturbed prompt, update features for loss
-                        # For now, let's assume the paper means the attack generation uses perturbed prompt,
-                        # but the optimization step for the original prompt uses the loss against that original prompt.
-                        # final_text_features_for_loss = self.text_encoder(perturbed_text_prompt_if_any)
-                        # final_text_features_for_loss = final_text_features_for_loss / final_text_features_for_loss.norm(dim=-1, keepdim=True)
-                        pass # Sticking to original prompt for loss calculation after 'perturbed' attack
-                else:
+                        adv_images_to_perturb = current_clean_images[:num_adv_samples]
+                        adv_labels = current_labels[:num_adv_samples]
+                        clean_images_part = current_clean_images[num_adv_samples:]
+                        clean_labels_part = current_labels[num_adv_samples:]
+
+                        perturbed_text_prompt_from_attack = None
+                        if num_adv_samples > 0:
+                            with torch.enable_grad():
+                                adv_images_perturbed, perturbed_text_prompt_from_attack = self._pgd_attack(
+                                    images=adv_images_to_perturb, labels=adv_labels,
+                                    text_features_for_attack=text_features_for_attack_generation,
+                                    image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
+                                    text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
+                                )
+                            adv_images_perturbed = adv_images_perturbed.to(self.dtype)
+
+                            text_features_for_adv_loss = current_txt_features_for_loss
+                            if self.adv_train_attack_prompt_type == "perturbed" and perturbed_text_prompt_from_attack is not None:
+                                text_features_for_adv_loss = self.text_encoder(perturbed_text_prompt_from_attack)
+                                text_features_for_adv_loss = text_features_for_adv_loss / text_features_for_adv_loss.norm(dim=-1, keepdim=True)
+                            
+                            adv_image_features = self.image_encoder(adv_images_perturbed, current_img_prompt_for_loss)
+                            adv_image_features = adv_image_features / adv_image_features.norm(dim=-1, keepdim=True)
+                            adv_logits = logit_scale * adv_image_features @ text_features_for_adv_loss.t()
+                            loss_for_candidate_batch += self.metric(adv_logits, adv_labels)
+
+                        if num_clean_samples > 0:
+                            clean_images_part_typed = clean_images_part.to(self.dtype)
+                            clean_image_features = self.image_encoder(clean_images_part_typed, current_img_prompt_for_loss)
+                            clean_image_features = clean_image_features / clean_image_features.norm(dim=-1, keepdim=True)
+                            clean_logits = logit_scale * clean_image_features @ current_txt_features_for_loss.t() # Clean part uses original candidate features
+                            loss_for_candidate_batch += self.metric(clean_logits, clean_labels_part)
+                    else: # Full adversarial batch for this candidate
+                        with torch.enable_grad():
+                            eval_image, perturbed_text_prompt_from_attack = self._pgd_attack(
+                                images=current_clean_images, labels=current_labels,
+                                text_features_for_attack=text_features_for_attack_generation,
+                                image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
+                                text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
+                            )
+                        eval_image = eval_image.to(self.dtype)
+
+                        text_features_for_loss_cand = current_txt_features_for_loss
+                        if self.adv_train_attack_prompt_type == "perturbed" and perturbed_text_prompt_from_attack is not None:
+                            text_features_for_loss_cand = self.text_encoder(perturbed_text_prompt_from_attack)
+                            text_features_for_loss_cand = text_features_for_loss_cand / text_features_for_loss_cand.norm(dim=-1, keepdim=True)
+                        
+                        image_features = self.image_encoder(eval_image, current_img_prompt_for_loss)
+                        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                        logits = logit_scale * image_features @ text_features_for_loss_cand.t()
+                        loss_for_candidate_batch += self.metric(logits, current_labels)
+                else: # Clean evaluation for this candidate
                     eval_image = current_clean_images.to(self.dtype)
+                    image_features = self.image_encoder(eval_image, current_img_prompt_for_loss)
+                    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                    logits = logit_scale * image_features @ current_txt_features_for_loss.t()
+                    loss_for_candidate_batch += self.metric(logits, current_labels)
+                
+                loss_accumulator += loss_for_candidate_batch.item() if isinstance(loss_for_candidate_batch, torch.Tensor) else loss_for_candidate_batch
 
-                image_features = self.image_encoder(eval_image, current_img_prompt_for_loss)
-                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                logits = logit_scale * image_features @ final_text_features_for_loss.t()
-                loss_accumulator += self.metric(logits, label).item()
 
         if self.parallel:
             loss_values_final = [x / len(self.train_data) for x in loss_accumulator]
@@ -379,13 +483,25 @@ class PromptCLIP_Shallow:
 
             objective_type_str = "maximized" if self.maximize_loss else "minimized"
             adv_status_str = "adversarial" if is_current_eval_adversarial else "clean"
-            attack_type_str = f" (Attack Gen: {self.adv_train_attack_prompt_type})" if is_current_eval_adversarial else ""
+            attack_type_str = f" (Attack Gen: {self.adv_train_attack_prompt_type}"
+            if is_current_eval_adversarial and self.adv_train_config.get('sample_ratio', 1.0) < 1.0:
+                attack_type_str += f", SampleRatio: {self.adv_train_config.get('sample_ratio', 1.0)}"
+            attack_type_str += ")" if is_current_eval_adversarial else ""
+            
             logger.info(f"*** New best {objective_type_str} ({adv_status_str} eval{attack_type_str}) loss found: {self.best_objective_loss_value:.4f} (at call {self.num_call}) ***")
 
+        # Test_every condition for logging and saving intermediate results.
+        # Note: self.num_call increments once per candidate if sequential, once per population if parallel.
+        # self.test_every is already scaled based on self.parallel in __init__.
+        # So, this check should correctly trigger at similar "generation" counts.
         if self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0):
             eval_loss_type_str = "adversarial" if is_current_eval_adversarial else "clean"
             obj_str = "maximize" if self.maximize_loss else "minimize"
-            attack_gen_type_str = f"(Attack Gen: {self.adv_train_attack_prompt_type})" if is_current_eval_adversarial else ""
+            attack_gen_type_str = f"(Attack Gen: {self.adv_train_attack_prompt_type}"
+            if is_current_eval_adversarial and self.adv_train_config.get('sample_ratio', 1.0) < 1.0:
+                attack_gen_type_str += f", SampleRatio: {self.adv_train_config.get('sample_ratio', 1.0)}"
+            attack_gen_type_str += ")" if is_current_eval_adversarial else ""
+
             logger.info(f"\n--- Testing at call {self.num_call} (Prompts from {eval_loss_type_str} eval {attack_gen_type_str}, objective: {obj_str} loss) ---")
             acc_clean = self.test(attack_config=None)
             self.acc.append(acc_clean.item())
@@ -406,12 +522,15 @@ class PromptCLIP_Shallow:
 
 
             output_dir = os.path.join(self.output_dir,self.task_name)
-            adv_train_attack_prompt_type_str = f"_advPromptGen{self.adv_train_attack_prompt_type}" if self.adv_train_config["enabled"] else ""
-            fname = "{}{}_{}_{}_parallel{}_advTrain{}{}_pgdTest{}_pgdOrg{}_maxLoss{}.pth".format(
+            adv_train_attack_prompt_type_str_fn = f"_advPromptGen{self.adv_train_attack_prompt_type}" if self.adv_train_config["enabled"] else ""
+            adv_train_sample_ratio_str_fn = f"_advSampleRatio{self.adv_train_config.get('sample_ratio', 1.0)}" if self.adv_train_config["enabled"] and self.adv_train_config.get('sample_ratio', 1.0) < 1.0 else ""
+            
+            fname = "{}{}_{}_{}_parallel{}_advTrain{}{}{}_pgdTest{}_pgdOrg{}_maxLoss{}.pth".format(
                 self.k_shot, self.task_name, self.opt_name, self.backbone.replace("/","-"),
-                self.parallel,
+                self.parallel, # class attribute self.parallel (from cfg["parallel"])
                 self.adv_train_config["enabled"],
-                adv_train_attack_prompt_type_str,
+                adv_train_attack_prompt_type_str_fn,
+                adv_train_sample_ratio_str_fn,
                 self.pgd_config["enabled"],
                 self.pgd_config.get("original_prompt", False),
                 self.maximize_loss
@@ -443,12 +562,12 @@ class PromptCLIP_Shallow:
         current_text_features_for_attack = text_features_for_attack.clone().detach()
         current_text_prompt = None
         if text_prompt_to_perturb is not None:
-            current_text_prompt = text_prompt_to_perturb.clone().detach() # This is [n_prompt_tokens_L, ctx_dim_L] per class
+            current_text_prompt = text_prompt_to_perturb.clone().detach() 
 
         epsilon = config['epsilon']
-        alpha_img = config['alpha'] # Renamed for clarity
+        alpha_img = config['alpha'] 
         num_iter = config['num_iter']
-        alpha_text_prompt = config.get('alpha_text_prompt', alpha_img) # Step size for text prompt perturbation
+        alpha_text_prompt = config.get('alpha_text_prompt', alpha_img) 
 
         delta_img = torch.zeros_like(images_orig, requires_grad=True, device=self.device).to(images_orig.dtype)
         delta_img.data.uniform_(-epsilon, epsilon)
@@ -456,77 +575,47 @@ class PromptCLIP_Shallow:
         delta_img.data = delta_img.data.to(images_orig.dtype)
 
         delta_text_prompt = None
-        if current_text_prompt is not None: # If we are perturbing the text prompt
-            # Assuming current_text_prompt is [n_cls, n_prompt_tokens_L, ctx_dim_L] or similar if it's already processed by text_encoder
-            # For APT paper, it's likely the raw context vectors [V]1..[V]M that are perturbed.
-            # Here, `text_prompt_to_perturb` is assumed to be the context vectors for each class.
-            # For simplicity, let's assume `text_prompt_to_perturb` are the embeddings that `text_encoder` takes.
-            # If `text_prompt_to_perturb` is the raw `[M, D_ctx]` vector(s), then TextEncoder needs to re-run.
-            # Let's assume `text_prompt_to_perturb` is the `[n_prompt_tokens_L, ctx_dim_L]` for a single class or
-            # the full [n_cls, total_len, D_emb] tensor from TextEncoder.
-            # For APT, it's the M context vectors that are learnable and thus perturbable.
-            # `text_prompt_to_perturb` is what generate_text_prompts returns, a single [M, D_ctx] for one intrinsic vector.
-            # Let's assume text_prompt_to_perturb is a single [M_L, D_ctx_L] learnable context.
-            # And text_features_for_attack are derived from this.
-            # This makes text_prompt_to_perturb the thing that needs grad.
+        if current_text_prompt is not None: 
             delta_text_prompt = torch.zeros_like(current_text_prompt, requires_grad=True, device=self.device).to(current_text_prompt.dtype)
-            # No initial random perturbation for text prompt delta, start from 0.
-            # No clamping for text prompt delta to an epsilon-ball in the same way as images,
-            # as text embeddings don't have a fixed [0,1] range.
-            # APT paper Algorithm 1, line 9: δ' = δ' + α'·∇tL. No explicit clamping for δ'.
 
         for iter_idx in range(num_iter):
+            grads_to_compute = []
+            
             delta_img.requires_grad_(True)
+            grads_to_compute.append(delta_img)
             perturbed_image = (images_orig + delta_img).to(self.dtype)
 
-            # Handle text prompt perturbation
             effective_text_features_for_iter = current_text_features_for_attack
             if current_text_prompt is not None and delta_text_prompt is not None:
                 delta_text_prompt.requires_grad_(True)
+                grads_to_compute.append(delta_text_prompt)
                 perturbed_text_prompt_iter = current_text_prompt + delta_text_prompt
-                # Need to re-encode the perturbed text prompt to get features
-                # This assumes self.text_encoder can handle the [M, D_ctx] directly for all classes.
-                # This part needs careful handling of how text_encoder expects its input if perturbing context vectors.
-                # For simplicity, if text_prompt_to_perturb is the direct [M, D_ctx] that TextEncoder.forward inserts,
-                # then TextEncoder needs to be called with this perturbed_text_prompt_iter.
-                effective_text_features_for_iter = self.text_encoder(perturbed_text_prompt_iter) # This call will re-embed and encode
+                effective_text_features_for_iter = self.text_encoder(perturbed_text_prompt_iter) 
                 effective_text_features_for_iter = effective_text_features_for_iter / effective_text_features_for_iter.norm(dim=-1, keepdim=True)
 
-
-            original_im_parallel = self.image_encoder.parallel
-            self.image_encoder.parallel = False
+            original_im_parallel_state_eval = self.image_encoder.parallel
+            self.image_encoder.parallel = False # Ensure single processing during attack step
             image_features = self.image_encoder(perturbed_image, image_prompt)
-            self.image_encoder.parallel = original_im_parallel
+            self.image_encoder.parallel = original_im_parallel_state_eval
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             logits = self.logit_scale.exp() * image_features @ effective_text_features_for_iter.t()
-
             loss = F.cross_entropy(logits, labels)
-
-            # Calculate gradients
-            grads_to_compute = [delta_img]
-            if current_text_prompt is not None and delta_text_prompt is not None:
-                grads_to_compute.append(delta_text_prompt)
 
             all_grads = torch.autograd.grad(loss, grads_to_compute,
                                              only_inputs=True,
-                                             retain_graph=False, # False if not needed for further grad ops in this iter
+                                             retain_graph=False, 
                                              create_graph=False
                                              )
             delta_img_grad = all_grads[0]
-
-            # Update image delta
             grad_sign_img = delta_img_grad.sign()
             delta_img.data = delta_img.data + alpha_img * grad_sign_img.to(delta_img.dtype)
             delta_img.data = torch.clamp(delta_img.data, -epsilon, epsilon)
             delta_img.data = torch.clamp(images_orig + delta_img.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images_orig
 
-            # Update text prompt delta if applicable
             if current_text_prompt is not None and delta_text_prompt is not None:
                 delta_text_prompt_grad = all_grads[1]
-                # APT paper does not specify a sign for text prompt updates, uses raw grad.
                 delta_text_prompt.data = delta_text_prompt.data + alpha_text_prompt * delta_text_prompt_grad.to(delta_text_prompt.dtype)
-                # No clamping for delta_text_prompt to epsilon ball in the paper.
 
         final_perturbed_image = (images_orig + delta_img.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
         final_perturbed_text_prompt = None
@@ -539,18 +628,30 @@ class PromptCLIP_Shallow:
     @torch.no_grad()
     def test(self, attack_config=None):
         if self.best_prompt_text is None or self.best_prompt_image is None:
-            return torch.tensor(0.0)
+            # If called before any best prompt is found (e.g. initial test)
+            if attack_config is not None and attack_config.get("enabled", False) and self.pgd_config.get("original_prompt", False):
+                 # Allow testing original prompts even if no tuned best prompt
+                 pass
+            else:
+                logger.warning("Test skipped: no best tuned prompt available for evaluation.")
+                return torch.tensor(0.0)
+
 
         correct = 0.
         total = 0.
-        original_parallel_state = self.parallel
-        self.parallel = self.text_encoder.parallel = self.image_encoder.parallel = False
+        
+        # Store and temporarily override parallel flags for encoders during test
+        original_text_encoder_parallel = self.text_encoder.parallel
+        original_image_encoder_parallel = self.image_encoder.parallel
+        self.text_encoder.parallel = False
+        self.image_encoder.parallel = False
+
 
         desc = "Testing Clean"
         is_attack_test = False
         current_text_features_for_test = None
         current_image_prompt_for_test = None
-        current_text_prompt_raw_for_attack_test = None # For "perturbed" test if needed
+        # current_text_prompt_raw_for_attack_test = None # Not used in current test pgd logic
 
         if attack_config is not None and attack_config.get("enabled", False):
             desc = f"Testing PGD(eps={attack_config['epsilon']}, iter={attack_config['num_iter']})"
@@ -559,22 +660,22 @@ class PromptCLIP_Shallow:
             if self.pgd_config.get("original_prompt", False):
                 desc += " (Original Prompts)"
                 current_text_features_for_test = self.get_original_text_features()
-                current_image_prompt_for_test = None
-                # For "perturbed" attack on original prompts, we'd need the original prompt structure.
-                # This case is less common for APT-style "perturbed" text prompt attacks.
+                current_image_prompt_for_test = None # No visual prompt for original CLIP text prompts
             else: # Use tuned prompts
                 desc += " (Current Best Tuned Prompts)"
-                if self.best_prompt_text is None or self.best_prompt_image is None:
+                if self.best_prompt_text is None or self.best_prompt_image is None: # Should have been caught above
                     logger.warning("Tuned PGD test skipped as best prompts are not available.")
+                    self.text_encoder.parallel = original_text_encoder_parallel
+                    self.image_encoder.parallel = original_image_encoder_parallel
                     return torch.tensor(0.0)
                 current_text_features_for_test = self.text_encoder(self.best_prompt_text)
                 current_text_features_for_test = current_text_features_for_test / current_text_features_for_test.norm(dim=-1,keepdim=True)
                 current_image_prompt_for_test = self.best_prompt_image
-                current_text_prompt_raw_for_attack_test = self.best_prompt_text # Pass the raw tuned prompt for potential perturbation
-
         else: # Clean test
-            if self.best_prompt_text is None or self.best_prompt_image is None:
+            if self.best_prompt_text is None or self.best_prompt_image is None: # Should have been caught above
                 logger.warning(f"Clean test skipped as best prompts are not available.")
+                self.text_encoder.parallel = original_text_encoder_parallel
+                self.image_encoder.parallel = original_image_encoder_parallel
                 return torch.tensor(0.0)
             current_text_features_for_test = self.text_encoder(self.best_prompt_text)
             current_text_features_for_test = current_text_features_for_test / current_text_features_for_test.norm(dim=-1,keepdim=True)
@@ -582,36 +683,35 @@ class PromptCLIP_Shallow:
 
 
         for batch in tqdm(self.test_loader, desc=desc, leave=False):
-            image,label = self.parse_batch(batch)
+            # parse_batch is called here with self.parallel potentially being True or False based on cfg["parallel"]
+            # For testing, we typically want non-parallel data processing per batch.
+            # Let's ensure parse_batch is called in a "single sample" mode for test consistency.
+            
+            # Temporarily set self.parallel to False for parse_batch during testing loop
+            # to avoid image repetition if cfg["parallel"] was true.
+            temp_original_class_parallel_attr = self.parallel
+            self.parallel = False # Affects parse_batch's internal logic
+            image,label = self.parse_batch(batch) # image [B,C,H,W], label [B]
+            self.parallel = temp_original_class_parallel_attr # Restore
+
             total += image.size(0)
 
             eval_image = image.to(self.dtype)
             final_text_features_for_eval = current_text_features_for_test
 
             if is_attack_test:
-                text_prompt_to_perturb_for_test_attack = None
-                # Decide if text prompt perturbation is part of this test attack
-                # Typically, PGD test config might not include text prompt perturbation details,
-                # but if it did, or if "adv_train_attack_prompt_type" was 'perturbed' and we wanted to mirror that in testing.
-                # For simplicity, let's assume standard PGD test only perturbs images unless explicitly configured for text.
-                # if attack_config.get("perturb_text_in_test", False) and current_text_prompt_raw_for_attack_test is not None:
-                # text_prompt_to_perturb_for_test_attack = current_text_prompt_raw_for_attack_test
-
                 with torch.enable_grad():
-                    eval_image, perturbed_text_prompt_from_attack = self._pgd_attack(
+                    # Standard PGD test usually does not perturb text prompts.
+                    # Pass None for text_prompt_to_perturb.
+                    eval_image, _ = self._pgd_attack( 
                         image,
                         label,
-                        current_text_features_for_test, # Features to guide image attack
+                        current_text_features_for_test, 
                         current_image_prompt_for_test,
-                        attack_config, # Test PGD config
-                        text_prompt_to_perturb=None # Standard test PGD usually doesn't perturb text prompt
+                        attack_config, 
+                        text_prompt_to_perturb=None 
                     )
                 eval_image = eval_image.to(self.dtype)
-                # If perturbed_text_prompt_from_attack was generated and meant to be used for eval:
-                # if perturbed_text_prompt_from_attack is not None:
-                # final_text_features_for_eval = self.text_encoder(perturbed_text_prompt_from_attack)
-                # final_text_features_for_eval = final_text_features_for_eval / final_text_features_for_eval.norm(dim=-1, keepdim=True)
-
 
             image_features = self.image_encoder(eval_image, current_image_prompt_for_test)
             image_features = image_features / image_features.norm(dim=-1,keepdim=True)
@@ -621,10 +721,9 @@ class PromptCLIP_Shallow:
             prediction = logits.argmax(dim=-1)
             correct += (prediction == label).float().sum()
 
-        self.parallel = original_parallel_state
-        self.text_encoder.parallel = original_parallel_state
-        self.image_encoder.parallel = original_parallel_state
-
+        self.text_encoder.parallel = original_text_encoder_parallel
+        self.image_encoder.parallel = original_image_encoder_parallel
+        
         acc = correct/total
         return acc
 
@@ -642,11 +741,11 @@ class PromptCLIP_Shallow:
             self.n_cls = len(self.classes)
             self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess)
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
-        elif self.task_name == 'CIFAR10_PGD':
+        elif self.task_name == 'CIFAR10_PGD': # This seems to imply pre-attacked data, be careful
             self.train_data,self.train_loader = load_train_cifar10_pgd(batch_size=self.batch_size,shots=self.k_shot)
-            if self.pgd_config["enabled"]:
+            if self.pgd_config["enabled"]: # If PGD test enabled, use PGD test set
                 self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
-            else:
+            else: # Else use clean CIFAR10 test set
                 self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
             self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
             self.n_cls = len(self.classes)
@@ -719,8 +818,20 @@ class PromptCLIP_Shallow:
     def parse_batch(self,batch):
         image = batch["image"]
         label = batch["label"]
-        image = image.to(device=self.device, dtype=self.dtype)
+        image = image.to(device=self.device, dtype=self.dtype if image.dtype != torch.uint8 else torch.float32) # Ensure correct dtype, uint8->float for PGD
+        if image.dtype == torch.uint8: # common for PIL loaded images
+            image = image.float() / 255.0 # Normalize if uint8
+        
+        # Apply CLIP preprocessing if not already done by dataloader (it should be for train/test data)
+        # However, if PGD dataset is loaded, it might not be preprocessed.
+        # For this code, preprocess is part of dataset loading. So image should be preprocessed.
+
         label = label.to(device=self.device)
-        if self.parallel:
+        
+        # self.parallel is the class attribute, set by main script's cfg["parallel"]
+        # This repetition is for when eval is processing a whole population (self.parallel=True in eval's main if)
+        # and each member of the population needs to be evaluated on the same batch of images.
+        if self.parallel: 
             image = image.repeat(self.popsize, 1, 1, 1)
+            # label remains [B_orig] and is used for each repeated image set.
         return image, label
