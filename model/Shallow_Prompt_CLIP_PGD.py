@@ -413,7 +413,7 @@ class PromptCLIP_Shallow:
                                     images=adv_images_to_perturb, labels=adv_labels,
                                     text_features_for_attack=text_features_for_attack_generation,
                                     image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
-                                    text_prompt_to_perturb=text_prompt_to_perturb
+                                    text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
                                 )
                             adv_images_perturbed = adv_images_perturbed.to(self.dtype)
 
@@ -442,12 +442,12 @@ class PromptCLIP_Shallow:
                                     image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
                                     text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
                                 )
-                        else: # For Gaussian, gradients are not needed for attack generation
+                        else:
                             eval_image, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
                                 images=current_clean_images, labels=current_labels,
                                 text_features_for_attack=text_features_for_attack_generation,
                                 image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
-                                text_prompt_to_perturb=text_prompt_to_perturb
+                                text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
                             )
                         eval_image = eval_image.to(self.dtype)
 
