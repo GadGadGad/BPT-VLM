@@ -386,8 +386,6 @@ class PromptCLIP_Shallow:
                 if is_current_eval_adversarial:
                     adv_sample_ratio = self.adv_train_config.get('sample_ratio', 1.0)
                     num_total_samples = current_clean_images.size(0)
-
-                    # text_features_for_attack_generation and text_prompt_for_attack_generation_perturbed are already set
                     
                     if adv_sample_ratio < 1.0 and num_total_samples > 0:
                         num_adv_samples = int(num_total_samples * adv_sample_ratio)
