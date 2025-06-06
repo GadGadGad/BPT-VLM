@@ -44,8 +44,8 @@ class Cifar_FewshotDataset(Dataset):
 
         return new_train_data
 
-def load_train_cifar10(batch_size=1,shots=16,preprocess=None):
-    args = {"shots":shots,"preprocess":preprocess}
+def load_train_cifar10(batch_size=1,shots=16,preprocess=None,seed=42):
+    args = {"shots":shots,"preprocess":preprocess, "seed": seed}
     train_data = Cifar_FewshotDataset(args)
     train_loader = DataLoader(train_data,batch_size=batch_size,shuffle=True,num_workers=4)
     return train_data,train_loader
