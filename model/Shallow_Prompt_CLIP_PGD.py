@@ -255,15 +255,9 @@ class PromptCLIP_Shallow:
             elif self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0):
                  is_current_eval_adversarial = True
 
+
         loss_accumulator = 0
         logit_scale = self.logit_scale.exp()
-
-        # Initialize accumulators for training accuracy
-        if self.parallel:
-            train_correct_accumulator = [0.0] * self.popsize
-        else:
-            train_correct_accumulator = 0.0
-        train_total_accumulator = 0
 
         current_prompt_text_for_eval_single = None
         current_prompt_image_for_eval_single = None
@@ -303,7 +297,6 @@ class PromptCLIP_Shallow:
         for batch_idx, batch in enumerate(self.train_loader):
             # `clean_image_orig` is [B_orig, C, H, W], `label_orig` is [B_orig]
             clean_image_orig, label_orig = self.parse_batch(batch)
-            train_total_accumulator += label_orig.shape[0]
 
             if self.parallel: # Population evaluation
                 B_actual_batch = label_orig.shape[0] # This is B_orig
@@ -368,21 +361,14 @@ class PromptCLIP_Shallow:
                                 adv_image_features = adv_image_features / adv_image_features.norm(dim=-1, keepdim=True)
                                 adv_logits = logit_scale * adv_image_features @ text_features_for_adv_loss.t()
                                 loss_for_member_batch_i += self.metric(adv_logits, adv_labels)
-                                
-                                prediction = adv_logits.argmax(dim=-1)
-                                train_correct_accumulator[i] += (prediction == adv_labels).float().sum().item()
-
 
                             if num_clean_samples > 0:
                                 clean_images_part_typed = clean_images_part.to(self.dtype)
                                 clean_image_features = self.image_encoder(clean_images_part_typed, current_img_prompt_for_loss)
                                 clean_image_features = clean_image_features / clean_image_features.norm(dim=-1, keepdim=True)
+                                # Clean part uses original text features of the current member
                                 clean_logits = logit_scale * clean_image_features @ current_txt_features_for_loss.t()
                                 loss_for_member_batch_i += self.metric(clean_logits, clean_labels_part)
-                                
-                                prediction = clean_logits.argmax(dim=-1)
-                                train_correct_accumulator[i] += (prediction == clean_labels_part).float().sum().item()
-
                         else: # Full adversarial batch for this member
                             if self.adv_train_attack_type == "pgd":
                                 with torch.enable_grad():
@@ -410,19 +396,12 @@ class PromptCLIP_Shallow:
                             image_features_i = image_features_i / image_features_i.norm(dim=-1, keepdim=True)
                             tmp_logits = logit_scale * image_features_i @ text_features_for_loss_i.t()
                             loss_for_member_batch_i += self.metric(tmp_logits, current_labels_for_member)
-                            
-                            prediction = tmp_logits.argmax(dim=-1)
-                            train_correct_accumulator[i] += (prediction == current_labels_for_member).float().sum().item()
-
                     else: # Clean evaluation for this member
                         eval_image_i = current_clean_images_for_member.to(self.dtype)
                         image_features_i = self.image_encoder(eval_image_i, current_img_prompt_for_loss)
                         image_features_i = image_features_i / image_features_i.norm(dim=-1, keepdim=True)
                         tmp_logits = logit_scale * image_features_i @ current_txt_features_for_loss.t()
                         loss_for_member_batch_i += self.metric(tmp_logits, current_labels_for_member)
-
-                        prediction = tmp_logits.argmax(dim=-1)
-                        train_correct_accumulator[i] += (prediction == current_labels_for_member).float().sum().item()
                     
                     loss_accumulator[i] += loss_for_member_batch_i.item() if isinstance(loss_for_member_batch_i, torch.Tensor) else loss_for_member_batch_i
 
@@ -476,19 +455,13 @@ class PromptCLIP_Shallow:
                             adv_logits = logit_scale * adv_image_features @ text_features_for_adv_loss.t()
                             loss_for_candidate_batch += self.metric(adv_logits, adv_labels)
 
-                            prediction = adv_logits.argmax(dim=-1)
-                            train_correct_accumulator += (prediction == adv_labels).float().sum().item()
-
                         if num_clean_samples > 0:
                             clean_images_part_typed = clean_images_part.to(self.dtype)
                             clean_image_features = self.image_encoder(clean_images_part_typed, current_img_prompt_for_loss)
                             clean_image_features = clean_image_features / clean_image_features.norm(dim=-1, keepdim=True)
+                            # Clean part uses original candidate features
                             clean_logits = logit_scale * clean_image_features @ current_txt_features_for_loss.t()
                             loss_for_candidate_batch += self.metric(clean_logits, clean_labels_part)
-
-                            prediction = clean_logits.argmax(dim=-1)
-                            train_correct_accumulator += (prediction == clean_labels_part).float().sum().item()
-
                     else: # Full adversarial batch for this candidate
                         if self.adv_train_attack_type == "pgd":
                             with torch.enable_grad():
@@ -516,34 +489,24 @@ class PromptCLIP_Shallow:
                         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                         logits = logit_scale * image_features @ text_features_for_loss_cand.t()
                         loss_for_candidate_batch += self.metric(logits, current_labels)
-
-                        prediction = logits.argmax(dim=-1)
-                        train_correct_accumulator += (prediction == current_labels).float().sum().item()
-
                 else: # Clean evaluation for this candidate
                     eval_image = current_clean_images.to(self.dtype)
                     image_features = self.image_encoder(eval_image, current_img_prompt_for_loss)
                     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                     logits = logit_scale * image_features @ current_txt_features_for_loss.t()
                     loss_for_candidate_batch += self.metric(logits, current_labels)
-
-                    prediction = logits.argmax(dim=-1)
-                    train_correct_accumulator += (prediction == current_labels).float().sum().item()
                 
                 loss_accumulator += loss_for_candidate_batch.item() if isinstance(loss_for_candidate_batch, torch.Tensor) else loss_for_candidate_batch
 
 
         if self.parallel:
             loss_values_final = [x / len(self.train_data) for x in loss_accumulator]
-            train_accuracies_final = [c / train_total_accumulator for c in train_correct_accumulator] if train_total_accumulator > 0 else [0.0] * self.popsize
         else:
             loss_values_final = loss_accumulator / len(self.train_data)
-            train_accuracies_final = train_correct_accumulator / train_total_accumulator if train_total_accumulator > 0 else 0.0
 
         epoch_best_loss_in_eval = None
         prompt_candidate_text = None
         prompt_candidate_image = None
-        best_train_accuracy_in_eval = 0.0
 
         if self.parallel:
             if self.maximize_loss:
@@ -552,13 +515,11 @@ class PromptCLIP_Shallow:
             else:
                 epoch_best_loss_in_eval = min(loss_values_final)
                 best_idx_in_eval = loss_values_final.index(epoch_best_loss_in_eval)
-            
-            best_train_accuracy_in_eval = train_accuracies_final[best_idx_in_eval]
+
             prompt_candidate_text = prompt_text_list_or_tensor[best_idx_in_eval]
             prompt_candidate_image = prompt_image_list_or_tensor[best_idx_in_eval]
         else:
             epoch_best_loss_in_eval = loss_values_final
-            best_train_accuracy_in_eval = train_accuracies_final
             prompt_candidate_text = current_prompt_text_for_eval_single
             prompt_candidate_image = current_prompt_image_for_eval_single
 
@@ -588,9 +549,12 @@ class PromptCLIP_Shallow:
                 attack_type_str_info += f", SampleRatio: {self.adv_train_config.get('sample_ratio', 1.0)}"
             attack_type_str_info += ")" if is_current_eval_adversarial else ""
             
-            logger.info(f"*** New best {objective_type_str} ({adv_status_str} eval{attack_type_str_info}) loss found: {self.best_objective_loss_value:.4f} (Train Acc: {best_train_accuracy_in_eval:.4f}, at call {self.num_call}) ***")
+            logger.info(f"*** New best {objective_type_str} ({adv_status_str} eval{attack_type_str_info}) loss found: {self.best_objective_loss_value:.4f} (at call {self.num_call}) ***")
 
         # Test_every condition for logging and saving intermediate results.
+        # Note: self.num_call increments once per candidate if sequential, once per population if parallel.
+        # self.test_every is already scaled based on self.parallel in __init__.
+        # So, this check should correctly trigger at similar "generation" counts.
         if self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0):
             eval_loss_type_str = "adversarial" if is_current_eval_adversarial else "clean"
             obj_str = "maximize" if self.maximize_loss else "minimize"
