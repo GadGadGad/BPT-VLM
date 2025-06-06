@@ -551,7 +551,7 @@ class PromptCLIP_Shallow:
         else:
             raise ValueError(f"Unsupported adversarial attack type: {attack_type}")
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def test(self, attack_config=None):
         if self.best_prompt_text is None or self.best_prompt_image is None:
             if attack_config is not None and attack_config.get("enabled", False) and self.pgd_config.get("original_prompt", False):
