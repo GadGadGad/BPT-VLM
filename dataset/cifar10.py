@@ -12,7 +12,7 @@ class Cifar_FewshotDataset(Dataset):
         self.shots = args["shots"]
         self.preprocess = args["preprocess"]
         self.seed=args["seed"]
-        self.all_train = CIFAR10(os.path.expanduser("../dataset"), transform=None,download=True,train=True)
+        self.all_train = CIFAR10(os.path.expanduser("../dataset"), transform=None,download=False,train=True)
         self.new_train_data = self.construct_few_shot_data()
         pass
 
@@ -53,7 +53,7 @@ def load_train_cifar10(batch_size=1,shots=16,preprocess=None,seed=42):
 class Cifar_TestDataset(Dataset):
     def __init__(self, args):
         self.preprocess = args["preprocess"]
-        self.all_test = CIFAR10(os.path.expanduser("../dataset"), transform=self.preprocess,download=True,train=False)
+        self.all_test = CIFAR10(os.path.expanduser("../dataset"), transform=self.preprocess,download=False,train=False)
 
 
     def __len__(self):
