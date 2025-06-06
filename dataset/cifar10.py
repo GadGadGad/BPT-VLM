@@ -53,7 +53,7 @@ def load_train_cifar10(batch_size=1,shots=16,preprocess=None):
 class Cifar_TestDataset(Dataset):
     def __init__(self, args):
         self.preprocess = args["preprocess"]
-        self.all_test = CIFAR10(os.path.expanduser("../dataset"), transform=self.preprocess,download=True,train=False)
+        self.all_test = CIFAR10(os.path.expanduser("../dataset"), transform=self.preprocess,download=False,train=False)
 
 
     def __len__(self):

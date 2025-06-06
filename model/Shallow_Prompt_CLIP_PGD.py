@@ -623,7 +623,7 @@ class PromptCLIP_Shallow:
             self.train_data,self.train_loader = load_train_cifar100(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
             self.test_data, self.test_loader = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess)
         elif self.task_name == 'CIFAR10':
-            self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=True)
+            self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=False)
             self.classes = self.dataset.classes
             self.n_cls = len(self.classes)
             self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
