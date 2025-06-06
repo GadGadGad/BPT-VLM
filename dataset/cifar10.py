@@ -12,10 +12,7 @@ class Cifar_FewshotDataset(Dataset):
         self.shots = args["shots"]
         self.preprocess = args["preprocess"]
         self.seed=args["seed"]
-        try:
-            self.all_train = CIFAR10(os.path.expanduser("../dataset"), transform=None,download=True,train=True)
-        except:
-            self.all_train = CIFAR10(os.path.expanduser("../dataset"), transform=None,download=False,train=True)
+        self.all_train = CIFAR10(os.path.expanduser("../dataset"), transform=None,download=False,train=True)
         self.new_train_data = self.construct_few_shot_data()
         pass
 
