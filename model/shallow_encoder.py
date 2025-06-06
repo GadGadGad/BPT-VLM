@@ -37,30 +37,56 @@ class TextEncoder(nn.Module):
             dim=1,
         )
         return x
-    def incorporate_prompt_parallel(self,prompt,embedding):
+    # def incorporate_prompt_parallel(self,prompt,embedding):
+    #     if prompt is None:
+    #         return embedding
+    #     prefix = embedding[:, :1, :] # (n_cls * popsize, 1, dim)
+    #     suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :] # (n_cls * popsize, 1, dim)
+    #     x = []
+    #     for index,pt in enumerate(prompt):
+    #         if pt.dim() == 2:
+    #             pt = pt.unsqueeze(0).expand(self.n_cls, -1, -1)
+    #         start = index * self.n_cls
+    #         pfx = prefix[start:start+self.n_cls]
+    #         sfx = suffix[start:start+self.n_cls]
+    #         tmp_x = torch.cat(
+    #             [
+    #                 pfx,  # (n_cls, 1, dim)
+    #                 pt,  # (n_cls, n_ctx, dim)
+    #                 sfx,  # (n_cls, *, dim)
+    #             ],
+    #             dim=1,
+    #         )
+    #         x.append(tmp_x)
+    #     x = torch.cat(x, dim=0)
+    #     return x
+    def incorporate_prompt_parallel(self, prompt, embedding):
         if prompt is None:
             return embedding
+        
+        # Vectorized implementation
         prefix = embedding[:, :1, :] # (n_cls * popsize, 1, dim)
-        suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :] # (n_cls * popsize, 1, dim)
-        x = []
-        for index,pt in enumerate(prompt):
-            if pt.dim() == 2:
-                pt = pt.unsqueeze(0).expand(self.n_cls, -1, -1)
-            start = index * self.n_cls
-            pfx = prefix[start:start+self.n_cls]
-            sfx = suffix[start:start+self.n_cls]
-            tmp_x = torch.cat(
-                [
-                    pfx,  # (n_cls, 1, dim)
-                    pt,  # (n_cls, n_ctx, dim)
-                    sfx,  # (n_cls, *, dim)
-                ],
-                dim=1,
-            )
-            x.append(tmp_x)
-        x = torch.cat(x, dim=0)
-        return x
+        suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :] # (n_cls * popsize, *, dim)
 
+        # prompt is a list of pop_size tensors of shape [n_ctx, dim]
+        prompts_tensor = torch.stack(prompt) # [pop_size, n_ctx, dim]
+        
+        # Expand for all classes and reshape to match flattened embedding
+        # [pop_size, n_ctx, dim] -> [pop_size, 1, n_ctx, dim] -> [pop_size, n_cls, n_ctx, dim]
+        prompts_tensor = prompts_tensor.unsqueeze(1).expand(-1, self.n_cls, -1, -1)
+        # [pop_size, n_cls, n_ctx, dim] -> [pop_size * n_cls, n_ctx, dim]
+        prompts_tensor = prompts_tensor.reshape(self.pop_size * self.n_cls, self.n_prompt_tokens_L, -1)
+
+        # Catenate without a Python loop
+        x = torch.cat(
+            [
+                prefix,
+                prompts_tensor,
+                suffix,
+            ],
+            dim=1,
+        )
+        return x
     def forward(self, prompt):
         if self.parallel:
             x = self.incorporate_prompt_parallel(prompt,self.init_pattern_embedding)
@@ -116,23 +142,46 @@ class VisionEncoder(nn.Module):
         # [batch_size,cls_token + n_prompts_V + n_patches, hidden_dim]
         return embedding
 
+    # def incorporate_prompt_parallel(self,prompt,embedding):
+    #     # embedding: (batch_size*popsize, *, *)
+    #     if prompt is None:
+    #         return embedding
+    #     B = int(embedding.shape[0]/self.pop_size)
+    #     x = []
+    #     for index, pt in enumerate(prompt):
+    #         start = index * B
+    #         tmp_embedding = embedding[start:start+B]
+    #         tmp_embedding= torch.cat((
+    #             tmp_embedding[:, :self.prefix_len, :],
+    #             pt.expand(B, -1, -1),
+    #         ), dim=1)
+    #         x.append(tmp_embedding)
+    #     x = torch.cat(x, dim=0)
+    #     return x
     def incorporate_prompt_parallel(self,prompt,embedding):
-        # embedding: (batch_size*popsize, *, *)
+        # embedding: (batch_size*popsize, n_patches+1, width)
         if prompt is None:
             return embedding
-        B = int(embedding.shape[0]/self.pop_size)
-        x = []
-        for index, pt in enumerate(prompt):
-            start = index * B
-            tmp_embedding = embedding[start:start+B]
-            tmp_embedding= torch.cat((
-                tmp_embedding[:, :self.prefix_len, :],
-                pt.expand(B, -1, -1),
-            ), dim=1)
-            x.append(tmp_embedding)
-        x = torch.cat(x, dim=0)
-        return x
 
+        # Vectorized implementation
+        B = int(embedding.shape[0] / self.pop_size)
+        prefix_embedding = embedding[:, :self.prefix_len, :]
+
+        # prompt is a list of pop_size tensors of shape [n_prompt_tokens_V, width]
+        prompts_tensor = torch.stack(prompt) # [pop_size, n_prompts_V, width]
+
+        # Expand for batch size B and reshape to match flattened embedding
+        # [pop_size, n_prompts, W] -> [pop_size, 1, n_prompts, W] -> [pop_size, B, n_prompts, W]
+        prompts_tensor = prompts_tensor.unsqueeze(1).expand(-1, B, -1, -1)
+        # [pop_size, B, n_prompts, W] -> [pop_size * B, n_prompts, W]
+        prompts_tensor = prompts_tensor.reshape(self.pop_size * B, self.n_prompt_tokens_V, -1)
+
+        x = torch.cat((
+            prefix_embedding,
+            prompts_tensor,
+        ), dim=1)
+        
+        return x
 
 
 

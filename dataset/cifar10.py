@@ -11,6 +11,7 @@ class Cifar_FewshotDataset(Dataset):
     def __init__(self, args):
         self.shots = args["shots"]
         self.preprocess = args["preprocess"]
+        self.seed=args["seed"]
         self.all_train = CIFAR10(os.path.expanduser("../dataset"), transform=None,download=True,train=True)
         self.new_train_data = self.construct_few_shot_data()
         pass
@@ -26,6 +27,7 @@ class Cifar_FewshotDataset(Dataset):
         new_train_data = []
         train_shot_count={}
         all_indices = [_ for _ in range(len(self.all_train))]
+        np.random.seed(self.seed)
         np.random.shuffle(all_indices)
 
         for index in all_indices:
