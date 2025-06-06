@@ -1,3 +1,4 @@
+
 import torch
 import argparse
 import yaml
@@ -6,8 +7,6 @@ from algorithm.CMA_ES import shallow_cma
 from algorithm.LM_CMA_ES import Shallow_LMCMAES
 from algorithm.MMES import Shallow_MMES
 from algorithm.LMMAES import Shallow_LMMAES
-# --- MODIFIED ---
-# Make sure this is the version of PromptCLIP_Shallow with the load_state_from_pth method
 from model.Shallow_Prompt_CLIP_PGD import PromptCLIP_Shallow
 import numpy as np
 import time
@@ -18,8 +17,8 @@ from model.analysis_utils import Analysis_Util
 __classification__ = ["CIFAR100","CIFAR10","CIFAR10_PGD","caltech101","StanfordCars","OxfordPets","UCF-101","DTD","EuroSAT",
                       "Food101","SUN397","ImageNet","refcoco"]
 __pypop__ = ["shallow_lmcmaes","shallow_mmes","shallow_dcem","shallow_maes"]
-__dataset__ = "./dataset"
-__output__ = "./dataset/result"
+__dataset__ = "/kaggle/working/dataset"
+__output__ = "/kaggle/working/dataset/result"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", default="CIFAR100", type=str)
@@ -30,8 +29,6 @@ parser.add_argument("--k_shot", default=16, type=int, help='How many shot to use
 parser.add_argument("--pgd_test", action='store_true', help='Enable PGD Attack during final testing')
 parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial Training')
 parser.add_argument("--pgd_original_prompt", action='store_true', help='Use original CLIP prompts for PGD testing instead of tuned ones')
-# --- NEW ---
-parser.add_argument("--resume_from_pth", type=str, default=None, help="Path to a .pth file to resume tuning from.")
 
 pgd_group = parser.add_argument_group('PGD Attack Parameters (for testing)')
 pgd_group.add_argument('--pgd_test_epsilon', type=float, default = 8/255, help='Epsilon for PGD attack')
@@ -66,9 +63,6 @@ cfg["backbone"] = args.backbone
 cfg["parallel"] = args.parallel
 cfg["maximize_loss"] = args.maximize_loss
 cfg["k_shot"] = args.k_shot
-# --- NEW ---
-# Add the resume path to the configuration dictionary
-cfg["resume_from_pth"] = args.resume_from_pth
 
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
@@ -130,15 +124,12 @@ ch.setLevel(logging.INFO)
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-# --- MODIFIED ---
-# Use 'a' (append) mode for the file handler if resuming, otherwise 'w' (write)
-log_mode = 'a' if args.resume_from_pth and os.path.exists(log_filepath) else 'w'
-fh = logging.FileHandler(log_filepath, mode=log_mode)
+fh = logging.FileHandler(log_filepath)
 fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
 
-logger.info("\n\n--- Starting Run ---")
+logger.info("--- Starting Run ---")
 logger.info(f"Arguments: {args}")
 logger.info(f"Loaded Config: {cfg}")
 logger.info(f"Log file path: {log_filepath}")
@@ -148,42 +139,10 @@ intrinsic_dim_L = cfg["intrinsic_dim_L"]
 intrinsic_dim_V = cfg["intrinsic_dim_V"]
 
 if args.task_name in __classification__:
-    # This will now automatically load the state if cfg["resume_from_pth"] is set
     prompt_clip = PromptCLIP_Shallow(args.task_name, cfg)
 else:
      logger.error(f"Task type for '{args.task_name}' not fully implemented.")
      exit()
-
-
-# --- NEW ---
-# If resuming, calculate the initial solution (x0) from the loaded best prompts
-# This will be used to seed the optimizer.
-if args.resume_from_pth and prompt_clip.best_prompt_text is not None:
-    logger.info("Calculating initial optimizer solution from loaded best prompts...")
-    try:
-        with torch.no_grad():
-            L_L = prompt_clip.linear_L.weight.data
-            L_V = prompt_clip.linear_V.weight.data
-
-            pinv_L = torch.linalg.pinv(L_L)
-            pinv_V = torch.linalg.pinv(L_V)
-
-            best_prompt_text_flat = prompt_clip.best_prompt_text.reshape(-1)
-            best_prompt_image_flat = prompt_clip.best_prompt_image.reshape(-1)
-
-            z_L_init = torch.matmul(pinv_L, best_prompt_text_flat)
-            z_V_init = torch.matmul(pinv_V, best_prompt_image_flat)
-
-            x0_from_resume = torch.cat([z_L_init, z_V_init]).cpu().numpy().astype(np.float32)
-
-            # Overwrite the 'initial_mean' in the config. This will be picked up by the optimizer setup below.
-            cfg['initial_mean'] = x0_from_resume
-            logger.info("Successfully set optimizer starting point to the previous best solution.")
-    except Exception as e:
-        logger.error(f"Failed to calculate resume point with pseudo-inverse: {e}")
-        logger.warning("Starting optimizer with default random initialization instead.")
-# --- END NEW ---
-
 
 def fitness_eval(prompt_zip_np):
     prompt_zip_np = np.array(prompt_zip_np)
@@ -207,8 +166,6 @@ opt_cfg = {
     'fitness_threshold': 1e-10,
     'seed_rng': cfg.get('seed', 0),
     'budget': cfg.get('budget', 25200),
-    # --- MODIFIED ---
-    # This now correctly uses the calculated resume point if available, or the default otherwise.
     'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))),
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
@@ -217,8 +174,6 @@ opt_cfg = {
 
 opt = None
 if args.opt == "shallow_cma":
-    # --- MODIFIED ---
-    # Assuming shallow_cma also takes its initial mean from the cfg dictionary
     opt = shallow_cma(cfg)
     logger.info("Using custom shallow_cma.")
 elif args.opt == "shallow_lmcmaes":
