@@ -32,6 +32,7 @@ class PromptCLIP_Shallow:
         self.loss = []
         self.acc = []
         self.acc_pgd = []
+        self.train_acc = []
         self.pgd_config = cfg.get("pgd", {"enabled": False})
         self.pgd_original_prompt = self.pgd_config.get("original_prompt", False)
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
@@ -103,6 +104,7 @@ class PromptCLIP_Shallow:
         self.best_prompt_image = None
         self.best_accuracy = 0.0
         self.best_accuracy_pgd = 0.0
+        self.best_train_accuracy = 0.0
         self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize
         self.sigma = cfg["sigma"]
         # Language Linear Layer
@@ -556,6 +558,11 @@ class PromptCLIP_Shallow:
         # self.test_every is already scaled based on self.parallel in __init__.
         # So, this check should correctly trigger at similar "generation" counts.
         if self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0):
+            # Calculate train accuracy with the current best prompts
+            acc_train_current = self.test_on_train_set()
+            self.train_acc.append(acc_train_current.item())
+            self.best_train_accuracy = acc_train_current.item()
+
             eval_loss_type_str = "adversarial" if is_current_eval_adversarial else "clean"
             obj_str = "maximize" if self.maximize_loss else "minimize"
             attack_gen_type_str = f"(AttackType: {self.adv_train_attack_type}, AttackGen: {self.adv_train_attack_prompt_type}"
@@ -567,7 +574,8 @@ class PromptCLIP_Shallow:
             acc_clean = self.test(attack_config=None)
             self.acc.append(acc_clean.item())
             self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
-            logger.info(f"Clean Accuracy: {acc_clean:.4f} (Best Clean: {self.best_accuracy:.4f})")
+            logger.info(f"Train Accuracy: {self.best_train_accuracy:.4f}")
+            logger.info(f"Test Clean Accuracy: {acc_clean:.4f} (Best Test Clean: {self.best_accuracy:.4f})")
 
             acc_attacked = torch.tensor(0.0)
             if self.pgd_config["enabled"] and self.best_prompt_text is not None:
@@ -601,6 +609,7 @@ class PromptCLIP_Shallow:
 
             content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
                        "best_accuracy":self.best_accuracy, "acc":self.acc,
+                       "best_train_accuracy": self.best_train_accuracy, "train_acc": self.train_acc,
                        "best_accuracy_pgd": self.best_accuracy_pgd, "acc_pgd": self.acc_pgd,
                        "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
                        "training_dataset_snapshot": self._training_dataset_snapshot,
@@ -699,6 +708,47 @@ class PromptCLIP_Shallow:
         else:
             raise ValueError(f"Unsupported adversarial attack type: {attack_type}")
 
+
+    @torch.no_grad()
+    def test_on_train_set(self):
+        if self.best_prompt_text is None or self.best_prompt_image is None:
+            logger.warning("Train accuracy test skipped: no best tuned prompt available.")
+            return torch.tensor(0.0)
+
+        correct = 0.
+        total = 0.
+
+        original_text_encoder_parallel = self.text_encoder.parallel
+        original_image_encoder_parallel = self.image_encoder.parallel
+        self.text_encoder.parallel = False
+        self.image_encoder.parallel = False
+
+        text_features = self.text_encoder(self.best_prompt_text)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        image_prompt = self.best_prompt_image
+
+        for batch in self.train_loader:
+            temp_original_class_parallel_attr = self.parallel
+            self.parallel = False
+            image, label = self.parse_batch(batch)
+            self.parallel = temp_original_class_parallel_attr
+
+            total += image.size(0)
+            image = image.to(self.dtype)
+
+            image_features = self.image_encoder(image, image_prompt)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+
+            logit_scale = self.logit_scale.exp()
+            logits = logit_scale * image_features @ text_features.t()
+            prediction = logits.argmax(dim=-1)
+            correct += (prediction == label).float().sum()
+
+        self.text_encoder.parallel = original_text_encoder_parallel
+        self.image_encoder.parallel = original_image_encoder_parallel
+
+        acc = correct / total
+        return acc
 
     @torch.no_grad()
     def test(self, attack_config=None):
