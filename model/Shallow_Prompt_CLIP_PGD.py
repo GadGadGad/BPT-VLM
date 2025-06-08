@@ -26,6 +26,8 @@ class PromptCLIP_Shallow:
         self.batch_size = cfg["batch_size"]
         self.k_shot = cfg["k_shot"]
         self.seed = cfg["seed"]
+        self.initial_prompt_text = cfg.get("initial_prompt_text", None)
+        self.learned_prompt_pos = cfg.get("learned_prompt_pos", "prefix")
         self.num_call = 0
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
@@ -176,24 +178,68 @@ class PromptCLIP_Shallow:
 
 
     def get_text_information(self,caption=None):
-        prompt_prefix = " ".join(["X"] * self.n_prompt_tokens_L)
+        prompt_prefix_placeholder = " ".join(["X"] * self.n_prompt_tokens_L)
+
         if caption is None:
-            classnames = [name.replace("_", " ").replace("-"," ") for name in self.classes]
-            pattern_prompts = [prompt_prefix + " " + name + "." for name in classnames]
-            tokenized_pattern_prompts= torch.cat([clip.tokenize(p) for p in pattern_prompts]).to(self.device)
+            classnames = [name.replace("_", " ").replace("-", " ") for name in self.classes]
+            pattern_prompts = []
+
+            for name in classnames:
+                initial_prompt = self.initial_prompt_text if self.initial_prompt_text else ""
+                
+                # Build the prompt string based on the learned prompt's position
+                if self.learned_prompt_pos == "prefix":
+                    # [Learned] [Initial] [Class]
+                    template = f"{prompt_prefix_placeholder} {initial_prompt} {name}."
+                elif self.learned_prompt_pos == "middle":
+                    # [Initial] [Learned] [Class]
+                    template = f"{initial_prompt} {prompt_prefix_placeholder} {name}."
+                elif self.learned_prompt_pos == "suffix":
+                    # [Initial] [Class] [Learned]
+                    template = f"{initial_prompt} {name} {prompt_prefix_placeholder}."
+                else: # Default to prefix
+                    template = f"{prompt_prefix_placeholder} {initial_prompt} {name}."
+
+                # Clean up extra spaces that might result from an empty initial_prompt
+                pattern_prompts.append(" ".join(template.split()))
+
+            tokenized_pattern_prompts = torch.cat([clip.tokenize(p) for p in pattern_prompts]).to(self.device)
+            
+            # Find the start index of the context tokens (the "X"s)
+            # This is crucial for the generalized `incorporate_prompt`
+            x_token_id = clip.tokenize("X")[0, 1].item() # The token id for a single "X"
+            # Find the first column where an "X" token appears. This is our start index.
+            ctx_start_idx = (tokenized_pattern_prompts == x_token_id).nonzero(as_tuple=True)[1].min().item()
+
             with torch.no_grad():
                 init_pattern_embedding = self.model.token_embedding(tokenized_pattern_prompts).type(self.dtype)
-            context = {"n_cls":self.n_cls, "n_prompt_tokens_L":self.n_prompt_tokens_L,
-                       "init_pattern_embedding":init_pattern_embedding, "tokenized_pattern_prompts":tokenized_pattern_prompts,
-                       "batch_size":self.batch_size,"pop_size":self.popsize,"parallel":self.parallel}
-        else:
-            pattern_prompt = prompt_prefix + caption + "."
+            
+            context = {
+                "n_cls": self.n_cls, 
+                "n_prompt_tokens_L": self.n_prompt_tokens_L,
+                "init_pattern_embedding": init_pattern_embedding, 
+                "tokenized_pattern_prompts": tokenized_pattern_prompts,
+                "ctx_start_idx": ctx_start_idx,  # Pass the start index to the encoder
+                "batch_size": self.batch_size,
+                "pop_size": self.popsize,
+                "parallel": self.parallel
+            }
+        else: # Logic for a single caption (e.g., for other tasks), kept simpler
+            pattern_prompt = prompt_prefix_placeholder + " " + caption + "."
             tokenized_pattern_prompts = torch.cat([clip.tokenize(pattern_prompt)]).to(self.device)
+            ctx_start_idx = 1 # Assuming it's always at the start for this simple case
             with torch.no_grad():
                 init_pattern_embedding = self.model.token_embedding(tokenized_pattern_prompts).type(self.dtype)
-            context = {"n_cls":1,"n_prompt_tokens_L":self.n_prompt_tokens_L,
-                       "init_pattern_embedding":init_pattern_embedding, "tokenized_pattern_prompts":tokenized_pattern_prompts,"batch_size":self.batch_size,
-                       "pop_size":self.popsize,"parallel":self.parallel}
+            context = {
+                "n_cls": 1,
+                "n_prompt_tokens_L": self.n_prompt_tokens_L,
+                "init_pattern_embedding": init_pattern_embedding, 
+                "tokenized_pattern_prompts": tokenized_pattern_prompts,
+                "ctx_start_idx": ctx_start_idx,
+                "batch_size": self.batch_size,
+                "pop_size": self.popsize,
+                "parallel": self.parallel
+            }
         return context
     @torch.no_grad()
     def get_original_text_features(self, specific_prompt_text=None):
@@ -327,14 +373,20 @@ class PromptCLIP_Shallow:
                             pgd_text_prompt_to_perturb = prompt_text_list_or_tensor[i].clone().detach()
 
                         if adv_sample_ratio < 1.0 and num_total_samples_member > 0:
-                            num_adv_samples = int(num_total_samples_member * adv_sample_ratio)
-                            num_clean_samples = num_total_samples_member - num_adv_samples
+                            # Not Guarantee Per-Class Split 
+                            # num_adv_samples = int(num_total_samples_member * adv_sample_ratio)
+                            # num_clean_samples = num_total_samples_member - num_adv_samples
 
-                            adv_images_to_perturb = current_clean_images_for_member[:num_adv_samples]
-                            adv_labels = current_labels_for_member[:num_adv_samples]
-                            clean_images_part = current_clean_images_for_member[num_adv_samples:]
-                            clean_labels_part = current_labels_for_member[num_adv_samples:]
+                            # adv_images_to_perturb = current_clean_images_for_member[:num_adv_samples]
+                            # adv_labels = current_labels_for_member[:num_adv_samples]
+                            # clean_images_part = current_clean_images_for_member[num_adv_samples:]
+                            # clean_labels_part = current_labels_for_member[num_adv_samples:]
+                            # The labels are the same for every member in the parallel evaluation of a batch
+                            adv_images_to_perturb, adv_labels, clean_images_part, clean_labels_part = \
+                                self._split_batch_by_class_for_adv_train(current_clean_images_for_member, current_labels_for_member, adv_sample_ratio)
                             
+                            num_adv_samples = adv_images_to_perturb.size(0)
+                            num_clean_samples = clean_images_part.size(0)
                             perturbed_text_prompt_from_attack = None
                             if num_adv_samples > 0:
                                 if self.adv_train_attack_type == "pgd":
@@ -420,14 +472,19 @@ class PromptCLIP_Shallow:
                     num_total_samples = current_clean_images.size(0)
 
                     if adv_sample_ratio < 1.0 and num_total_samples > 0:
-                        num_adv_samples = int(num_total_samples * adv_sample_ratio)
-                        num_clean_samples = num_total_samples - num_adv_samples
+                        # Not Guarantee Per-Class Split 
+                        # num_adv_samples = int(num_total_samples * adv_sample_ratio)
+                        # num_clean_samples = num_total_samples - num_adv_samples
 
-                        adv_images_to_perturb = current_clean_images[:num_adv_samples]
-                        adv_labels = current_labels[:num_adv_samples]
-                        clean_images_part = current_clean_images[num_adv_samples:]
-                        clean_labels_part = current_labels[num_adv_samples:]
+                        # adv_images_to_perturb = current_clean_images[:num_adv_samples]
+                        # adv_labels = current_labels[:num_adv_samples]
+                        # clean_images_part = current_clean_images[num_adv_samples:]
+                        # clean_labels_part = current_labels[num_adv_samples:]
+                        adv_images_to_perturb, adv_labels, clean_images_part, clean_labels_part = \
+                            self._split_batch_by_class_for_adv_train(current_clean_images, current_labels, adv_sample_ratio)
 
+                        num_adv_samples = adv_images_to_perturb.size(0)
+                        num_clean_samples = clean_images_part.size(0)
                         perturbed_text_prompt_from_attack = None
                         if num_adv_samples > 0:
                             if self.adv_train_attack_type == "pgd":
@@ -595,8 +652,11 @@ class PromptCLIP_Shallow:
             adv_train_attack_prompt_type_str_fn = f"_advPromptGen{self.adv_train_attack_prompt_type}" if self.adv_train_config["enabled"] else ""
             adv_train_sample_ratio_str_fn = f"_advSampleRatio{self.adv_train_config.get('sample_ratio', 1.0)}" if self.adv_train_config["enabled"] and self.adv_train_config.get('sample_ratio', 1.0) < 1.0 else ""
             
-            fname = "{}{}_{}_{}_parallel{}_advTrain{}{}{}{}_pgdTest{}_pgdOrg{}_maxLoss{}.pth".format(
-                self.k_shot, self.task_name, self.opt_name, self.backbone.replace("/","-"),
+            initial_prompt_str_fn = f"_initPrompt" if self.initial_prompt_text is not None else ""
+            learned_pos_str_fn = f"_pos{self.learned_prompt_pos}"
+            fname = "{}{}{}_{}_{}_parallel{}_advTrain{}{}{}{}_pgdTest{}_pgdOrg{}_maxLoss{}.pth".format(
+                self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn, # Added here
+                self.opt_name, self.backbone.replace("/","-"),
                 self.parallel,
                 self.adv_train_config["enabled"],
                 adv_train_attack_type_str_fn,
@@ -628,7 +688,43 @@ class PromptCLIP_Shallow:
             return_value = loss_values_final * -1 if self.maximize_loss else loss_values_final
         return return_value
 
+    def _split_batch_by_class_for_adv_train(self, images, labels, ratio):
+        """
+        Splits a batch of images and labels into adversarial and clean sets,
+        ensuring the split ratio is applied per class.
+        """
+        adv_indices = []
+        clean_indices = []
+        
+        # Find all unique classes present in this batch
+        unique_classes = torch.unique(labels)
+        
+        for class_id in unique_classes:
+            # Find the indices of all samples belonging to the current class
+            class_indices = (labels == class_id).nonzero(as_tuple=True)[0]
+            
+            # Calculate how many samples of this class to make adversarial
+            num_class_samples = len(class_indices)
+            num_adv_for_class = int(num_class_samples * ratio)
+            
+            # Shuffle indices to ensure random selection within the class for each batch
+            shuffled_class_indices = class_indices[torch.randperm(num_class_samples)]
 
+            # Split the indices for this class
+            adv_indices.append(shuffled_class_indices[:num_adv_for_class])
+            clean_indices.append(shuffled_class_indices[num_adv_for_class:])
+
+        # Concatenate all indices from all classes
+        adv_indices = torch.cat(adv_indices) if adv_indices else torch.tensor([], dtype=torch.long, device=labels.device)
+        clean_indices = torch.cat(clean_indices) if clean_indices else torch.tensor([], dtype=torch.long, device=labels.device)
+        
+        # Gather the images and labels based on the final index lists
+        adv_images = images[adv_indices]
+        adv_labels = labels[adv_indices]
+        clean_images = images[clean_indices]
+        clean_labels = labels[clean_indices]
+        
+        return adv_images, adv_labels, clean_images, clean_labels
     def _run_adversarial_attack(self, images, labels, text_features_for_attack, image_prompt, config, text_prompt_to_perturb=None):
         """
         Generates adversarial examples based on the configured attack type (PGD or Gaussian).

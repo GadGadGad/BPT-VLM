@@ -1,4 +1,3 @@
-
 import torch
 import argparse
 import yaml
@@ -271,7 +270,7 @@ else:
                  if prompt_clip.adv_train_config['enabled'] and prompt_clip.adv_train_config.get('sample_ratio', 1.0) < 1.0:
                      adv_train_info_str += f", SampleRatio: {prompt_clip.adv_train_config.get('sample_ratio', 1.0)}"
                  adv_train_info_str += ")" if prompt_clip.adv_train_config['enabled'] else ""
-                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}{adv_train_info_str}): {prompt_clip.best_objective_loss_value:.4f}, Best Acc: {prompt_clip.best_accuracy:.4f}, Best PGD Acc: {prompt_clip.best_accuracy_pgd:.4f}")
+                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}{adv_train_info_str}): {prompt_clip.best_objective_loss_value:.4f}, Best Train Acc: {prompt_clip.best_train_accuracy:.4f}, Best Test Acc: {prompt_clip.best_accuracy:.4f}, Best PGD Acc: {prompt_clip.best_accuracy_pgd:.4f}")
     else:
         logger.warning(f"Non-PyPop optimizer path not fully defined for task {args.task_name}")
 
@@ -304,6 +303,7 @@ content = {
     "task_name": args.task_name, "opt_name": cfg["opt_name"], "backbone": cfg["backbone"],
     "k_shot": cfg["k_shot"],
     "best_accuracy": prompt_clip.best_accuracy, "acc": prompt_clip.acc,
+    "best_train_accuracy": prompt_clip.best_train_accuracy, "train_acc": prompt_clip.train_acc,
     "best_accuracy_pgd": prompt_clip.best_accuracy_pgd, "acc_pgd": prompt_clip.acc_pgd,
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
     "best_objective_loss_value": prompt_clip.best_objective_loss_value,

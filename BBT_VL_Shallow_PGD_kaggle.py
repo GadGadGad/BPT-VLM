@@ -29,6 +29,12 @@ parser.add_argument("--pgd_test", action='store_true', help='Enable PGD Attack d
 parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial Training')
 parser.add_argument("--pgd_original_prompt", action='store_true', help='Use original CLIP prompts for PGD testing instead of tuned ones')
 
+# --- START OF MODIFICATION 1 ---
+prompt_group = parser.add_argument_group('Initial Prompt Configuration')
+prompt_group.add_argument("--initial_prompt_text", type=str, default=None, help="Initial text prompt (e.g., 'a photo of a'). If None, no initial prompt is used.")
+prompt_group.add_argument("--learned_prompt_pos", type=str, default="prefix", choices=["prefix", "middle", "suffix"], help="Position of the learned prompt relative to the initial prompt and class name.")
+# --- END OF MODIFICATION 1 ---
+
 pgd_group = parser.add_argument_group('PGD Attack Parameters (for testing)')
 pgd_group.add_argument('--pgd_test_epsilon', type=float, default = 8/255, help='Epsilon for PGD attack')
 pgd_group.add_argument('--pgd_test_alpha', type=float, default = 2/255, help='Alpha for PGD attack') # Corrected default as per typical eps/4
@@ -62,6 +68,12 @@ cfg["backbone"] = args.backbone
 cfg["parallel"] = args.parallel
 cfg["maximize_loss"] = args.maximize_loss
 cfg["k_shot"] = args.k_shot
+
+# --- START OF MODIFICATION 2 ---
+cfg["initial_prompt_text"] = args.initial_prompt_text
+cfg["learned_prompt_pos"] = args.learned_prompt_pos
+# --- END OF MODIFICATION 2 ---
+
 
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
@@ -97,12 +109,19 @@ adv_train_attack_type_str_fn = f"_advAttackType{cfg['adv_train']['attack_type']}
 adv_train_attack_prompt_type_str_fn = f"_advPromptGen{cfg['adv_train']['attack_prompt_type']}" if cfg['adv_train']['enabled'] else ""
 adv_train_sample_ratio_str_fn = f"_advSampleRatio{cfg['adv_train']['sample_ratio']}" if cfg['adv_train']['enabled'] and cfg['adv_train']['sample_ratio'] < 1.0 else ""
 
-fname_base = "{}{}_{}_{}_parallel{}_advTrain{}{}{}{}_pgdTest{}_pgdOrg{}_maxLoss{}".format(
+# --- START OF MODIFICATION 3 ---
+# Add new prompt options to the filename for better tracking
+initial_prompt_str_fn = f"_initPrompt" if cfg["initial_prompt_text"] is not None else ""
+learned_pos_str_fn = f"_pos{cfg['learned_prompt_pos']}"
+
+fname_base = "{}{}_{}_{}_parallel{}{}{}{}{}{}{}_advTrain{}{}{}{}_pgdTest{}_pgdOrg{}_maxLoss{}".format(
     cfg["k_shot"],
     args.task_name,
     cfg["opt_name"],
     cfg["backbone"].replace("/", "-"),
     args.parallel,
+    initial_prompt_str_fn, # Added here
+    learned_pos_str_fn,     # Added here
     cfg["adv_train"]["enabled"],
     adv_train_attack_type_str_fn,
     adv_train_attack_prompt_type_str_fn,
@@ -111,6 +130,8 @@ fname_base = "{}{}_{}_{}_parallel{}_advTrain{}{}{}{}_pgdTest{}_pgdOrg{}_maxLoss{
     cfg["pgd"]["original_prompt"],
     cfg["maximize_loss"]
 )
+# --- END OF MODIFICATION 3 ---
+
 log_filename = fname_base + ".log"
 log_filepath = os.path.join(output_dir, log_filename)
 
@@ -195,6 +216,10 @@ logger.info(f"Using Backbone: {cfg['backbone']}")
 logger.info(f"Parallel Evaluation during Search: {cfg['parallel']}")
 logger.info(f"Device: {device}")
 logger.info(f"Intrinsic Dimensions: L={intrinsic_dim_L}, V={intrinsic_dim_V}")
+# --- START OF MODIFICATION 4 ---
+logger.info(f"Initial Prompt Text: '{cfg['initial_prompt_text']}'")
+logger.info(f"Learned Prompt Position: {cfg['learned_prompt_pos']}")
+# --- END OF MODIFICATION 4 ---
 logger.info(f"Optimization Objective: {'Maximize' if cfg['maximize_loss'] else 'Minimize'} Loss")
 logger.info(f"Budget: {opt_cfg['budget']}")
 logger.info(f"Adversarial Training (PGD during optimization): {cfg['adv_train']['enabled']}")

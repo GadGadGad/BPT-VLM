@@ -14,6 +14,7 @@ class TextEncoder(nn.Module):
         self.n_cls = context["n_cls"]
         self.n_prompt_tokens_L = context["n_prompt_tokens_L"]
         self.init_pattern_embedding = context["init_pattern_embedding"]
+        self.ctx_start_idx = context["ctx_start_idx"] # Get the start index for learned vectors
         self.tokenized_pattern_prompts= context["tokenized_pattern_prompts"]
         self.batch_size = context["batch_size"] # original batch size
         self.parallel = context["parallel"]
@@ -24,8 +25,8 @@ class TextEncoder(nn.Module):
     def incorporate_prompt(self, prompt, embedding):
         if prompt is None:
             return embedding
-        prefix = embedding[:, :1, :]
-        suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :]
+        prefix = embedding[:, :self.ctx_start_idx, :]
+        suffix = embedding[:, self.ctx_start_idx + self.n_prompt_tokens_L:, :]
         if prompt.dim() == 2:
             prompt = prompt.unsqueeze(0).expand(self.n_cls, -1, -1)
         x = torch.cat(
@@ -65,8 +66,8 @@ class TextEncoder(nn.Module):
             return embedding
         
         # Vectorized implementation
-        prefix = embedding[:, :1, :] # (n_cls * popsize, 1, dim)
-        suffix = embedding[:, 1 + self.n_prompt_tokens_L:, :] # (n_cls * popsize, *, dim)
+        prefix = embedding[:, :self.ctx_start_idx, :]
+        suffix = embedding[:, self.ctx_start_idx + self.n_prompt_tokens_L:, :]
 
         # prompt is a list of pop_size tensors of shape [n_ctx, dim]
         prompts_tensor = torch.stack(prompt) # [pop_size, n_ctx, dim]
