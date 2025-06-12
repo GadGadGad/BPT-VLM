@@ -174,7 +174,7 @@ def main(args):
     correct_adv = 0
     
     for images, labels in tqdm(test_loader, desc=f"Evaluating (Attack: {args.attack_type})"):
-        images, labels = images.to(device), labels.to(device)
+        images, labels = images.to(device).to(model.dtype), labels.to(device).to(model.dtype)
         
         with torch.no_grad():
             outputs_clean = model_wrapper(images)
