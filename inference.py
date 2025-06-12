@@ -40,37 +40,55 @@ def get_dataset_info(dataset_name, preprocess_fn, batch_size=64, data_dir='./dat
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return class_names, test_loader, len(test_dataset), test_dataset
 
-
-# <<< START: Corrected Attack Functions >>>
 def run_pgd_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
     """
-    Corrected PGD attack function using torch.autograd.grad to avoid graph issues
-    and handle mixed-precision correctly.
+    Corrected PGD attack function with random start, using torch.autograd.grad
+    and correctly handling mixed-precision dtypes inside the loop.
     """
     epsilon, alpha, num_iter = config['epsilon'], config['alpha'], config['num_iter']
     norm_lower_limit = config['norm_lower_limit']
     norm_upper_limit = config['norm_upper_limit']
-    
-    # Start with a clone of the original images
+
+    # Start with a clone of the original images. image_batch_orig is already the correct dtype (e.g., float16)
     adv_images = image_batch_orig.clone().detach()
-    
+
+    # --- RANDOM START ---
+    # Initialize perturbation with random noise and clamp to valid range
     delta = torch.empty_like(adv_images).uniform_(-epsilon, epsilon)
     adv_images = adv_images + delta
     adv_images = torch.clamp(adv_images, min=norm_lower_limit, max=norm_upper_limit)
+    # The result of the above operations could be float32, so cast it back to the
+    # model's expected dtype before the first iteration.
+    adv_images = adv_images.to(dtype)
 
     for _ in range(num_iter):
         adv_images.requires_grad = True
+        
+        # Now adv_images has the correct dtype for the model call
         logits = model_wrapper(adv_images)
+        
+        # Calculate loss in float32 for stability
         loss = F.cross_entropy(logits.float(), label_batch)
+        
+        # The calculated gradient will be float32
         grad = torch.autograd.grad(loss, adv_images, retain_graph=False, create_graph=False)[0]
 
         with torch.no_grad():
+            # This operation results in a float32 tensor because `grad` is float32
             adv_images = adv_images.detach() + alpha * grad.sign()
+            
+            # Project perturbation back to the epsilon-ball around the ORIGINAL image
             eta = torch.clamp(adv_images - image_batch_orig, min=-epsilon, max=epsilon)
+            
+            # Add projected perturbation to original image and clamp to valid range
             adv_images = torch.clamp(image_batch_orig + eta, min=norm_lower_limit, max=norm_upper_limit)
+            
+            # *** CRUCIAL FIX ***
+            # Cast the updated adversarial image back to the model's expected dtype
+            # before it's used in the next iteration's model forward pass.
             adv_images = adv_images.to(dtype)
             
-    return adv_images
+    return adv_images.detach()
 
 
 def run_fgsm_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
