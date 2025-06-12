@@ -132,7 +132,7 @@ def main(args):
     
     # 5. Loop over the test set
     for images, labels in tqdm(test_loader, desc="Evaluating on Test Set"):
-        images, labels = images.to(device), labels.to(device)
+        images, labels = images.to(device).to(model.dtype), labels.to(device)
         
         # --- Clean Evaluation ---
         with torch.no_grad():
