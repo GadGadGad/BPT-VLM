@@ -41,13 +41,19 @@ def get_dataset_info(dataset_name, preprocess_fn, batch_size=64, data_dir='./dat
     return class_names, test_loader, len(test_dataset), test_dataset
 
 
+# <<< START: Corrected Attack Functions >>>
 def run_pgd_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
+    """
+    Corrected PGD attack function using torch.autograd.grad to avoid graph issues
+    and handle mixed-precision correctly.
+    """
     epsilon, alpha, num_iter = config['epsilon'], config['alpha'], config['num_iter']
     norm_lower_limit = config['norm_lower_limit']
     norm_upper_limit = config['norm_upper_limit']
-
+    
+    # Start with a clone of the original images
     adv_images = image_batch_orig.clone().detach()
-
+    
     delta = torch.empty_like(adv_images).uniform_(-epsilon, epsilon)
     adv_images = adv_images + delta
     adv_images = torch.clamp(adv_images, min=norm_lower_limit, max=norm_upper_limit)
@@ -60,15 +66,17 @@ def run_pgd_attack_batch(model_wrapper, image_batch_orig, label_batch, config, d
 
         with torch.no_grad():
             adv_images = adv_images.detach() + alpha * grad.sign()
-            # Project perturbation back to epsilon-ball around ORIGINAL image
             eta = torch.clamp(adv_images - image_batch_orig, min=-epsilon, max=epsilon)
-            # Add projected perturbation to original image and clamp to valid range
             adv_images = torch.clamp(image_batch_orig + eta, min=norm_lower_limit, max=norm_upper_limit)
             adv_images = adv_images.to(dtype)
             
-    return adv_images.detach()
+    return adv_images
+
 
 def run_fgsm_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
+    """ 
+    A corrected FGSM attack using torch.autograd.grad.
+    """
     epsilon = config['epsilon']
     norm_lower_limit = config['norm_lower_limit']
     norm_upper_limit = config['norm_upper_limit']
@@ -81,9 +89,11 @@ def run_fgsm_attack_batch(model_wrapper, image_batch_orig, label_batch, config, 
     grad = torch.autograd.grad(loss, adv_images, retain_graph=False, create_graph=False)[0]
 
     with torch.no_grad():
+        # The update results in a float32 tensor
         perturbed_images = adv_images + epsilon * grad.sign()
         adv_images = torch.clamp(perturbed_images, min=norm_lower_limit, max=norm_upper_limit)
 
+    # The final cast to the correct dtype is sufficient here as there is no loop
     return adv_images.detach().to(dtype)
 
 
