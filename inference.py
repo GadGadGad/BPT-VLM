@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import clip
 import argparse
 from tqdm import tqdm
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, CIFAR100
 import torchattacks # <<< Import the library
 
 # Make sure shallow_encoder.py is in the same directory
@@ -43,30 +43,69 @@ def get_dataset_info(dataset_name, preprocess_fn, batch_size=64, data_dir='./dat
         # This part could be expanded to support the other datasets from the training script
         raise ValueError(f"Unknown or unsupported dataset for inference: {dataset_name}.")
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    return class_names, test_loader, len(test_dataset)
+    return class_names, test_loader, len(test_dataset), test_dataset
 
-# Your custom PGD attack function
+
+# <<< START: Corrected Attack Functions using torch.autograd.grad >>>
 def run_pgd_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
+    """
+    Corrected PGD attack function using torch.autograd.grad.
+    """
     epsilon, alpha, num_iter = config['epsilon'], config['alpha'], config['num_iter']
-    # The dataloader already provides normalized images, so we attack in that space.
-    image_batch_orig = image_batch_orig.to(device)
-    delta = torch.zeros_like(image_batch_orig, requires_grad=True)
-    
+    norm_lower_limit = config['norm_lower_limit']
+    norm_upper_limit = config['norm_upper_limit']
+
+    # Start with a clone of the original images
+    adv_images = image_batch_orig.clone().detach()
+
     for _ in range(num_iter):
-        loss = F.cross_entropy(model_wrapper(image_batch_orig + delta), label_batch)
-        loss.backward()
-        delta.data = (delta + alpha*delta.grad.detach().sign()).clamp(-epsilon, epsilon)
-        delta.grad.zero_()
-    return (image_batch_orig + delta.detach()).to(dtype)
+        # We need to track gradients w.r.t. the adversarial images in each step
+        adv_images.requires_grad = True
+        
+        # Forward pass to get logits
+        logits = model_wrapper(adv_images)
+        # FIX: Cast logits to float32 before loss calculation, as cross_entropy for float16 is not implemented on CUDA
+        loss = F.cross_entropy(logits.float(), label_batch)
+
+        # Calculate gradients of the loss w.r.t. the images using autograd.grad
+        grad = torch.autograd.grad(loss, adv_images, retain_graph=False, create_graph=False)[0]
+
+        with torch.no_grad():
+            # Update adversarial images
+            adv_images = adv_images.detach() + alpha * grad.sign()
+            # Project perturbation back into the epsilon-ball
+            eta = torch.clamp(adv_images - image_batch_orig, min=-epsilon, max=epsilon)
+            # Clip final images to be within the valid normalized range
+            adv_images = torch.clamp(image_batch_orig + eta, min=norm_lower_limit, max=norm_upper_limit)
+            
+    return adv_images.to(dtype)
+
 
 def run_fgsm_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
-    """ A simple FGSM attack - essentially a single-step PGD. """
+    """ 
+    A corrected FGSM attack using torch.autograd.grad.
+    """
     epsilon = config['epsilon']
-    image_batch_orig = image_batch_orig.to(device)
-    delta = torch.zeros_like(image_batch_orig, requires_grad=True)
-    loss = F.cross_entropy(model_wrapper(image_batch_orig + delta), label_batch)
-    loss.backward()
-    return (image_batch_orig + epsilon*delta.grad.detach().sign()).to(dtype)
+    norm_lower_limit = config['norm_lower_limit']
+    norm_upper_limit = config['norm_upper_limit']
+    
+    # Enable gradient tracking on the input images
+    adv_images = image_batch_orig.clone().detach().requires_grad_(True)
+
+    # Forward pass
+    logits = model_wrapper(adv_images)
+    # FIX: Cast logits to float32 before loss calculation
+    loss = F.cross_entropy(logits.float(), label_batch)
+
+    # Get the gradient of the loss w.r.t. the images
+    grad = torch.autograd.grad(loss, adv_images, retain_graph=False, create_graph=False)[0]
+
+    with torch.no_grad():
+        # Create the adversarial images and clamp to the valid range
+        perturbed_images = adv_images + epsilon * grad.sign()
+        adv_images = torch.clamp(perturbed_images, min=norm_lower_limit, max=norm_upper_limit)
+
+    return adv_images.detach().to(dtype)
 
 
 def main(args):
@@ -79,7 +118,6 @@ def main(args):
     best_prompt_text = checkpoint['best_prompt_text'].to(device)
     best_prompt_image = checkpoint['best_prompt_image'].to(device)
 
-    # Use the task name from the args, but fall back to the one in the config if not provided
     task_name = args.task_name if args.task_name else config['task_name']
     print(f"Evaluating on task: {task_name}")
 
@@ -88,17 +126,12 @@ def main(args):
     text_encoder = TextEncoder(model)
     vision_encoder = VisionEncoder(model)
     
-    class_names, test_loader, n_test_samples = get_dataset_info(task_name, preprocess, args.batch_size)
+    class_names, test_loader, n_test_samples, _ = get_dataset_info(task_name, preprocess, args.batch_size)
     
-    # --- START: DYNAMIC CONTEXT CREATION (The Fix) ---
-    # This logic is replicated from Shallow_Prompt_CLIP_PGD.get_text_information
-    
-    # 1. Get prompt settings from the loaded config
     n_prompt_tokens_L = config['n_prompt_tokens_L']
     initial_prompt_text = config.get('initial_prompt_text', None)
-    learned_prompt_pos = config.get('learned_prompt_pos', 'prefix') # Default to 'prefix' if not found
+    learned_prompt_pos = config.get('learned_prompt_pos', 'prefix') 
     
-    # 2. Build the prompt templates based on the config
     prompt_prefix_placeholder = " ".join(["X"] * n_prompt_tokens_L)
     pattern_prompts = []
     
@@ -119,22 +152,19 @@ def main(args):
 
         pattern_prompts.append(" ".join(template.split()))
 
-    # 3. Tokenize and dynamically find the context start index
     tokenized_pattern_prompts = torch.cat([clip.tokenize(p) for p in pattern_prompts]).to(device)
     x_token_id = clip.tokenize("X")[0, 1].item()
     ctx_start_idx = (tokenized_pattern_prompts == x_token_id).nonzero(as_tuple=True)[1].min().item()
 
-    # 4. Create the initial embedding from the full tokenized templates
     with torch.no_grad():
         init_pattern_embedding = model.token_embedding(tokenized_pattern_prompts).type(model.dtype)
 
-    # 5. Assemble the final context dictionaries
     text_context = {
         "n_cls": len(class_names),
         "n_prompt_tokens_L": n_prompt_tokens_L,
         "init_pattern_embedding": init_pattern_embedding,
         "tokenized_pattern_prompts": tokenized_pattern_prompts,
-        "ctx_start_idx": ctx_start_idx, # Use the dynamically found index
+        "ctx_start_idx": ctx_start_idx,
         "batch_size": args.batch_size,
         "pop_size": 1,
         "parallel": False
@@ -150,31 +180,43 @@ def main(args):
         text_features /= text_features.norm(dim=-1, keepdim=True)
         
     print(f"Preparing for evaluation with attack: {args.attack_type}")
+    mean = preprocess.transforms[-1].mean
+    std = preprocess.transforms[-1].std
     model_wrapper = PromptCLIPWrapper(vision_encoder, text_features, best_prompt_image, model)
     attack = None
     if args.attack_type != 'none':
-        pgd_config = {'epsilon': args.epsilon, 'alpha': args.alpha, 'num_iter': args.pgd_num_iter}
+        norm_mean = torch.tensor(mean).to(device).view(-1, 1, 1)
+        norm_std = torch.tensor(std).to(device).view(-1, 1, 1)
+        norm_upper_limit = ((1 - norm_mean) / norm_std)
+        norm_lower_limit = ((0 - norm_mean) / norm_std)
+
+        # Config for our custom PGD/FGSM functions
+        custom_attack_config = {
+            'epsilon': args.epsilon, 
+            'alpha': args.alpha, 
+            'num_iter': args.pgd_num_iter, 
+            'norm_lower_limit': norm_lower_limit, 
+            'norm_upper_limit': norm_upper_limit
+        }
+        
         if args.attack_type == 'pgd':
-            attack = lambda images, labels: run_pgd_attack_batch(model_wrapper, images, labels, pgd_config, device, model.dtype)
+            attack = lambda images, labels: run_pgd_attack_batch(model_wrapper, images, labels, custom_attack_config, device, model.dtype)
         elif args.attack_type == 'fgsm':
-            attack = lambda images, labels: run_fgsm_attack_batch(model_wrapper, images, labels, pgd_config, device, model.dtype)
-        else:
-            if args.attack_type == 'autoattack':
-                attack = torchattacks.AutoAttack(model_wrapper, norm='Linf', eps=args.epsilon, version='standard')
-            elif args.attack_type == 'cw':
-                attack = torchattacks.CW(model_wrapper, c=1, steps=100)
-            else:
-                raise ValueError(f"Unknown attack type: {args.attack_type}")
-            
-            mean = preprocess.transforms[-1].mean
-            std = preprocess.transforms[-1].std
+            attack = lambda images, labels: run_fgsm_attack_batch(model_wrapper, images, labels, custom_attack_config, device, model.dtype)
+        elif args.attack_type == 'autoattack':
+            attack = torchattacks.AutoAttack(model_wrapper, norm='Linf', eps=args.epsilon, version='standard')
             attack.set_normalization_used(mean=mean, std=std)
+        elif args.attack_type == 'cw':
+            attack = torchattacks.CW(model_wrapper, c=1, steps=100)
+            attack.set_normalization_used(mean=mean, std=std)
+        else:
+            raise ValueError(f"Unknown attack type: {args.attack_type}")
 
     correct_clean = 0
     correct_adv = 0
     
     for images, labels in tqdm(test_loader, desc=f"Evaluating (Attack: {args.attack_type})"):
-        images, labels = images.to(device).to(model.dtype), labels.to(device).to(model.dtype)
+        images, labels = images.to(device).to(model.dtype), labels.to(device)
         
         with torch.no_grad():
             outputs_clean = model_wrapper(images)
@@ -182,7 +224,7 @@ def main(args):
             correct_clean += (predictions_clean == labels).sum().item()
         
         if attack:
-            adv_images = attack(images.to(model.dtype), labels) # Ensure images are correct dtype for attack
+            adv_images = attack(images, labels) 
             with torch.no_grad():
                 outputs_adv = model_wrapper(adv_images)
                 predictions_adv = outputs_adv.argmax(dim=-1)

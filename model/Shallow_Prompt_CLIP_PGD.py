@@ -372,15 +372,6 @@ class PromptCLIP_Shallow:
                             pgd_text_prompt_to_perturb = prompt_text_list_or_tensor[i].clone().detach()
 
                         if adv_sample_ratio < 1.0 and num_total_samples_member > 0:
-                            # Not Guarantee Per-Class Split 
-                            # num_adv_samples = int(num_total_samples_member * adv_sample_ratio)
-                            # num_clean_samples = num_total_samples_member - num_adv_samples
-
-                            # adv_images_to_perturb = current_clean_images_for_member[:num_adv_samples]
-                            # adv_labels = current_labels_for_member[:num_adv_samples]
-                            # clean_images_part = current_clean_images_for_member[num_adv_samples:]
-                            # clean_labels_part = current_labels_for_member[num_adv_samples:]
-                            # The labels are the same for every member in the parallel evaluation of a batch
                             adv_images_to_perturb, adv_labels, clean_images_part, clean_labels_part = \
                                 self._split_batch_by_class_for_adv_train(current_clean_images_for_member, current_labels_for_member, adv_sample_ratio)
                             
@@ -471,14 +462,6 @@ class PromptCLIP_Shallow:
                     num_total_samples = current_clean_images.size(0)
 
                     if adv_sample_ratio < 1.0 and num_total_samples > 0:
-                        # Not Guarantee Per-Class Split 
-                        # num_adv_samples = int(num_total_samples * adv_sample_ratio)
-                        # num_clean_samples = num_total_samples - num_adv_samples
-
-                        # adv_images_to_perturb = current_clean_images[:num_adv_samples]
-                        # adv_labels = current_labels[:num_adv_samples]
-                        # clean_images_part = current_clean_images[num_adv_samples:]
-                        # clean_labels_part = current_labels[num_adv_samples:]
                         adv_images_to_perturb, adv_labels, clean_images_part, clean_labels_part = \
                             self._split_batch_by_class_for_adv_train(current_clean_images, current_labels, adv_sample_ratio)
 
@@ -796,7 +779,7 @@ class PromptCLIP_Shallow:
 
             noise = torch.randn_like(images_orig, device=self.device) * epsilon
             final_perturbed_image = (images_orig + noise).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
-            return final_perturbed_image, None # Gaussian noise does not perturb text prompt
+            return final_perturbed_image, None
 
         else:
             raise ValueError(f"Unsupported adversarial attack type: {attack_type}")
