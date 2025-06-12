@@ -36,7 +36,6 @@ class PromptCLIP_Shallow:
         self.acc_pgd = []
         self.train_acc = []
         self.pgd_config = cfg.get("pgd", {"enabled": False})
-        self.pgd_original_prompt = self.pgd_config.get("original_prompt", False)
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
         self.adv_train_attack_prompt_type = self.adv_train_config.get("attack_prompt_type", "on-the-fly")
         self.adv_train_attack_type = self.adv_train_config.get("attack_type", "pgd")
@@ -639,8 +638,7 @@ class PromptCLIP_Shallow:
                 acc_attacked = self.test(attack_config=self.pgd_config)
                 self.acc_pgd.append(acc_attacked.item())
                 self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
-                pgd_test_type_str = " (Original Prompts)" if self.pgd_config.get("original_prompt", False) else ""
-                logger.info(f"PGD Accuracy (Test{pgd_test_type_str}): {acc_attacked:.4f} (Best PGD{pgd_test_type_str}: {self.best_accuracy_pgd:.4f})")
+                logger.info(f"PGD Accuracy (Test): {acc_attacked:.4f} (Best PGD: {self.best_accuracy_pgd:.4f})")
             elif self.pgd_config["enabled"]:
                  logger.info("PGD Accuracy (Test): Skipped (no best prompt yet)")
             elif not self.pgd_config["enabled"]:
@@ -654,7 +652,7 @@ class PromptCLIP_Shallow:
             
             initial_prompt_str_fn = f"_initPrompt" if self.initial_prompt_text is not None else ""
             learned_pos_str_fn = f"_pos{self.learned_prompt_pos}"
-            fname = "{}{}{}_{}_{}_parallel{}_advTrain{}{}{}{}_pgdTest{}_pgdOrg{}_maxLoss{}.pth".format(
+            fname = "{}{}{}_{}_{}_parallel{}_advTrain{}{}{}{}_pgdTest{}_maxLoss{}.pth".format(
                 self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn, # Added here
                 self.opt_name, self.backbone.replace("/","-"),
                 self.parallel,
@@ -663,7 +661,6 @@ class PromptCLIP_Shallow:
                 adv_train_attack_prompt_type_str_fn,
                 adv_train_sample_ratio_str_fn,
                 self.pgd_config["enabled"],
-                self.pgd_config.get("original_prompt", False),
                 self.maximize_loss
             )
 
@@ -849,13 +846,8 @@ class PromptCLIP_Shallow:
     @torch.no_grad()
     def test(self, attack_config=None):
         if self.best_prompt_text is None or self.best_prompt_image is None:
-            # If called before any best prompt is found (e.g. initial test)
-            if attack_config is not None and attack_config.get("enabled", False) and self.pgd_config.get("original_prompt", False):
-                 # Allow testing original prompts even if no tuned best prompt
-                 pass
-            else:
-                logger.warning("Test skipped: no best tuned prompt available for evaluation.")
-                return torch.tensor(0.0)
+            logger.warning("Test skipped: no best tuned prompt available for evaluation.")
+            return torch.tensor(0.0)
 
         correct = 0.
         total = 0.
@@ -868,28 +860,16 @@ class PromptCLIP_Shallow:
 
         desc = "Testing Clean"
         is_attack_test = False
-        current_text_features_for_test = None
-        current_image_prompt_for_test = None
+        
+        # Use the best tuned prompts for all tests
+        current_text_features_for_test = self.text_encoder(self.best_prompt_text)
+        current_text_features_for_test = current_text_features_for_test / current_text_features_for_test.norm(dim=-1,keepdim=True)
+        current_image_prompt_for_test = self.best_prompt_image
 
         if attack_config is not None and attack_config.get("enabled", False):
             is_attack_test = True
 
-            if self.pgd_config.get("original_prompt", False):
-                desc += " (Original Prompts)"
-                current_text_features_for_test = self.get_original_text_features()
-                current_image_prompt_for_test = None # No visual prompt for original CLIP text prompts
-            else: # Use tuned prompts
-                current_text_features_for_test = self.text_encoder(self.best_prompt_text)
-                current_text_features_for_test = current_text_features_for_test / current_text_features_for_test.norm(dim=-1,keepdim=True)
-                current_image_prompt_for_test = self.best_prompt_image
-        else: # Clean test
-            current_text_features_for_test = self.text_encoder(self.best_prompt_text)
-            current_text_features_for_test = current_text_features_for_test / current_text_features_for_test.norm(dim=-1,keepdim=True)
-            current_image_prompt_for_test = self.best_prompt_image
-
         for batch in self.test_loader:
-            # Temporarily set self.parallel to False for parse_batch during testing loop
-            # to avoid image repetition if cfg["parallel"] was true.
             temp_original_class_parallel_attr = self.parallel
             self.parallel = False # Affects parse_batch's internal logic
             image,label = self.parse_batch(batch) # image [B,C,H,W], label [B]
@@ -901,10 +881,7 @@ class PromptCLIP_Shallow:
             final_text_features_for_eval = current_text_features_for_test
 
             if is_attack_test:
-                # PGD attack always requires gradients
                 with torch.enable_grad():
-                    # Standard PGD test usually does not perturb text prompts.
-                    # Pass None for text_prompt_to_perturb.
                     eval_image, _ = self._run_adversarial_attack( 
                         image,
                         label,

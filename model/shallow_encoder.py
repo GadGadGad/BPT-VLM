@@ -38,6 +38,7 @@ class TextEncoder(nn.Module):
             dim=1,
         )
         return x
+    
     # def incorporate_prompt_parallel(self,prompt,embedding):
     #     if prompt is None:
     #         return embedding
@@ -124,6 +125,7 @@ class VisionEncoder(nn.Module):
         self.tranformer = clip_model.visual.transformer
         self.ln_post = clip_model.visual.ln_post
         self.proj = clip_model.visual.proj
+
     def set_context(self,context):
         self.n_prompt_tokens_V = context["n_prompt_tokens_V"]
         self.batch_size = context["batch_size"] # original batch size
