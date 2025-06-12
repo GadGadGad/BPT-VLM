@@ -10,3 +10,4 @@ further_analysis.py
 configs/ablation.yaml
 configs/test.yaml
 docs
+*.txt
