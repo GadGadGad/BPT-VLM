@@ -46,10 +46,11 @@ def get_dataset_info(dataset_name, preprocess_fn, batch_size=64, data_dir='./dat
     return class_names, test_loader, len(test_dataset), test_dataset
 
 
-# <<< START: Corrected Attack Functions using torch.autograd.grad >>>
+# <<< START: Corrected Attack Functions >>>
 def run_pgd_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
     """
-    Corrected PGD attack function using torch.autograd.grad.
+    Corrected PGD attack function using torch.autograd.grad to avoid graph issues
+    and handle mixed-precision correctly.
     """
     epsilon, alpha, num_iter = config['epsilon'], config['alpha'], config['num_iter']
     norm_lower_limit = config['norm_lower_limit']
@@ -64,21 +65,23 @@ def run_pgd_attack_batch(model_wrapper, image_batch_orig, label_batch, config, d
         
         # Forward pass to get logits
         logits = model_wrapper(adv_images)
-        # FIX: Cast logits to float32 before loss calculation, as cross_entropy for float16 is not implemented on CUDA
         loss = F.cross_entropy(logits.float(), label_batch)
 
-        # Calculate gradients of the loss w.r.t. the images using autograd.grad
+        # Calculate gradients of the loss w.r.t. the images
         grad = torch.autograd.grad(loss, adv_images, retain_graph=False, create_graph=False)[0]
 
         with torch.no_grad():
-            # Update adversarial images
+            # Update adversarial images. The result will be float32 due to type promotion from the gradient.
             adv_images = adv_images.detach() + alpha * grad.sign()
             # Project perturbation back into the epsilon-ball
             eta = torch.clamp(adv_images - image_batch_orig, min=-epsilon, max=epsilon)
             # Clip final images to be within the valid normalized range
             adv_images = torch.clamp(image_batch_orig + eta, min=norm_lower_limit, max=norm_upper_limit)
             
-    return adv_images.to(dtype)
+            # *** THE FIX: Cast the updated images back to the model's expected dtype for the next iteration ***
+            adv_images = adv_images.to(dtype)
+            
+    return adv_images
 
 
 def run_fgsm_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
@@ -89,23 +92,21 @@ def run_fgsm_attack_batch(model_wrapper, image_batch_orig, label_batch, config, 
     norm_lower_limit = config['norm_lower_limit']
     norm_upper_limit = config['norm_upper_limit']
     
-    # Enable gradient tracking on the input images
     adv_images = image_batch_orig.clone().detach().requires_grad_(True)
 
-    # Forward pass
     logits = model_wrapper(adv_images)
-    # FIX: Cast logits to float32 before loss calculation
     loss = F.cross_entropy(logits.float(), label_batch)
 
-    # Get the gradient of the loss w.r.t. the images
     grad = torch.autograd.grad(loss, adv_images, retain_graph=False, create_graph=False)[0]
 
     with torch.no_grad():
-        # Create the adversarial images and clamp to the valid range
+        # The update results in a float32 tensor
         perturbed_images = adv_images + epsilon * grad.sign()
         adv_images = torch.clamp(perturbed_images, min=norm_lower_limit, max=norm_upper_limit)
 
+    # The final cast to the correct dtype is sufficient here as there is no loop
     return adv_images.detach().to(dtype)
+# <<< END: Corrected Attack Functions >>>
 
 
 def main(args):
