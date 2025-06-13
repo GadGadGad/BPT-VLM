@@ -25,17 +25,19 @@ parser.add_argument("--opt", default="shallow_cma", type=str)
 parser.add_argument("--parallel", action='store_true', help='Whether to allow parallel evaluation')
 parser.add_argument("--backbone", default="ViT-B/32", type=str)
 parser.add_argument("--k_shot", default=16, type=int, help='How many shot to use')
-parser.add_argument("--pgd_test", action='store_true', help='Enable PGD Attack during final testing')
 parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial Training')
 
 prompt_group = parser.add_argument_group('Initial Prompt Configuration')
 prompt_group.add_argument("--initial_prompt_text", type=str, default=None, help="Initial text prompt (e.g., 'a photo of a'). If None, no initial prompt is used.")
 prompt_group.add_argument("--learned_prompt_pos", type=str, default="prefix", choices=["prefix", "middle", "suffix"], help="Position of the learned prompt relative to the initial prompt and class name.")
 
-pgd_group = parser.add_argument_group('PGD Attack Parameters (for testing)')
-pgd_group.add_argument('--pgd_test_epsilon', type=float, default = 8/255, help='Epsilon for PGD attack')
-pgd_group.add_argument('--pgd_test_alpha', type=float, default = 2/255, help='Alpha for PGD attack') 
-pgd_group.add_argument('--pgd_test_num_iter', type=int, default = 10, help='Number of iterations for PGD attack')
+test_attack_group = parser.add_argument_group('Test-Time Attack Parameters')
+test_attack_group.add_argument('--enable_test_attack', action='store_true', help='Enable adversarial attack during final testing.')
+test_attack_group.add_argument('--test_attack_type', type=str, default='pgd', choices=['pgd', 'fgsm', 'gaussian'], help='Type of adversarial attack for testing.')
+test_attack_group.add_argument('--test_attack_epsilon', type=float, default=8/255, help='Epsilon for the test attack.')
+test_attack_group.add_argument('--test_attack_alpha', type=float, default=2/255, help='Alpha/step size for the test attack (used by PGD).')
+test_attack_group.add_argument('--test_attack_num_iter', type=int, default=10, help='Number of iterations for the test attack (used by PGD).')
+
 
 adv_train_group = parser.add_argument_group('Adversarial Training Parameters (for optimization loss)')
 adv_train_group.add_argument("--adv_train_epsilon", type=float, default=4/255, help="PGD epsilon for adversarial training (e.g., 4/255 or 8/255)")
@@ -45,7 +47,7 @@ adv_train_group.add_argument("--adv_train_all", action='store_true', help="Use P
 adv_train_group.add_argument("--adv_train_attack_prompt_type", type=str, default="on-the-fly", choices=["constant", "on-the-fly", "perturbed"], help="Strategy for selecting text prompt during adversarial example generation for training loss.")
 adv_train_group.add_argument("--adv_train_alpha_text_prompt", type=float, default=0.01, help="PGD alpha/step size for perturbing text prompt itself (if adv_train_attack_prompt_type is 'perturbed')")
 adv_train_group.add_argument("--adv_train_sample_ratio", type=float, default=1.0, help="Ratio of few-shot samples to apply PGD to during adversarial training (0.0 to 1.0). 1.0 means all samples.")
-adv_train_group.add_argument("--adv_train_attack_type", type=str, default="pgd", choices=["pgd", "gaussian"], help="Type of adversarial attack for training (PGD or Gaussian noise).")
+adv_train_group.add_argument("--adv_train_attack_type", type=str, default="pgd", choices=["pgd", "fgsm", "gaussian"], help="Type of adversarial attack for training (PGD, FGSM, or Gaussian noise).")
 
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
@@ -74,12 +76,13 @@ if args.task_name in cfg:
 else:
     logging.warning(f"Task '{args.task_name}' not found in config. Using default settings.")
 
-if 'pgd' not in cfg:
-    cfg['pgd'] = {}
-cfg['pgd']['epsilon'] = args.pgd_test_epsilon
-cfg['pgd']['alpha'] = args.pgd_test_alpha
-cfg['pgd']['num_iter'] = args.pgd_test_num_iter
-cfg['pgd']['enabled'] = args.pgd_test
+if 'test_attack' not in cfg:
+    cfg['test_attack'] = {}
+cfg['test_attack']['enabled'] = args.enable_test_attack
+cfg['test_attack']['attack_type'] = args.test_attack_type
+cfg['test_attack']['epsilon'] = args.test_attack_epsilon
+cfg['test_attack']['alpha'] = args.test_attack_alpha
+cfg['test_attack']['num_iter'] = args.test_attack_num_iter
 
 if 'adv_train' not in cfg:
     cfg['adv_train'] = {}
@@ -104,19 +107,21 @@ adv_train_sample_ratio_str_fn = f"_advSampleRatio{cfg['adv_train']['sample_ratio
 initial_prompt_str_fn = f"_initPrompt" if cfg["initial_prompt_text"] is not None else ""
 learned_pos_str_fn = f"_pos{cfg['learned_prompt_pos']}"
 
-fname_base = "{}{}_{}_{}_parallel{}_advTrain{}{}{}{}{}{}_pgdTest{}_maxLoss{}".format(
+test_attack_str_fn = f"_testAttack{cfg['test_attack']['attack_type']}" if cfg['test_attack']['enabled'] else "_testAttackNone"
+
+fname_base = "{}{}_{}_{}_parallel{}_advTrain{}{}{}{}{}{}_maxLoss{}".format(
     cfg["k_shot"],
     args.task_name,
     cfg["opt_name"],
     cfg["backbone"].replace("/", "-"),
     args.parallel,
-    initial_prompt_str_fn, 
-    learned_pos_str_fn,    
+    initial_prompt_str_fn,
+    learned_pos_str_fn,
     cfg["adv_train"]["enabled"],
     adv_train_attack_type_str_fn,
     adv_train_attack_prompt_type_str_fn,
     adv_train_sample_ratio_str_fn,
-    cfg["pgd"]["enabled"],
+    test_attack_str_fn,
     cfg["maximize_loss"]
 )
 log_filename = fname_base + ".log"
@@ -207,7 +212,7 @@ logger.info(f"Initial Prompt Text: '{cfg['initial_prompt_text']}'")
 logger.info(f"Learned Prompt Position: {cfg['learned_prompt_pos']}")
 logger.info(f"Optimization Objective: {'Maximize' if cfg['maximize_loss'] else 'Minimize'} Loss")
 logger.info(f"Budget: {opt_cfg['budget']}")
-logger.info(f"Adversarial Training (PGD during optimization): {cfg['adv_train']['enabled']}")
+logger.info(f"Adversarial Training (during optimization): {cfg['adv_train']['enabled']}")
 if cfg['adv_train']['enabled']:
     adv_eps_cfg = cfg['adv_train'].get('epsilon', "Default in PromptCLIP")
     adv_alpha_cfg = cfg['adv_train'].get('alpha', "Default in PromptCLIP")
@@ -217,16 +222,19 @@ if cfg['adv_train']['enabled']:
     adv_sample_ratio_cfg = cfg['adv_train'].get('sample_ratio', 1.0)
     adv_attack_type_cfg = cfg['adv_train'].get('attack_type', 'pgd')
     logger.info(f"  Adv. Training Params (from cfg): Epsilon={adv_eps_cfg}, Alpha_Img={adv_alpha_cfg}, Iter={adv_iter_cfg}, SampleRatio={adv_sample_ratio_cfg}")
-    logger.info(f"  Training Attack Type: {adv_attack_type_cfg}")
+    logger.info(f"  Training Attack Type: {adv_attack_type_cfg.upper()}")
     logger.info(f"  Adv. Training Attack Prompt Type: {adv_attack_prompt_type_cfg}")
     if adv_attack_prompt_type_cfg == 'perturbed':
         logger.info(f"  Adv. Training Alpha for Text Prompt Perturbation: {adv_alpha_text_prompt_cfg}")
-logger.info(f"PGD Attack during Final Test: {cfg['pgd']['enabled']}")
-if cfg['pgd']['enabled']:
-    pgd_eps_cfg = cfg['pgd'].get('epsilon', "Default in PromptCLIP")
-    pgd_alpha_cfg = cfg['pgd'].get('alpha', "Default in PromptCLIP")
-    pgd_iter_cfg = cfg['pgd'].get('num_iter', "Default in PromptCLIP")
-    logger.info(f"  PGD Test Params (from cfg): Epsilon={pgd_eps_cfg}, Alpha={pgd_alpha_cfg}, Iter={pgd_iter_cfg}")
+logger.info(f"Attack during Final Test: {cfg['test_attack']['enabled']}")
+if cfg['test_attack']['enabled']:
+    test_attack_type_cfg = cfg['test_attack'].get('attack_type', "N/A")
+    test_attack_eps_cfg = cfg['test_attack'].get('epsilon', "N/A")
+    test_attack_alpha_cfg = cfg['test_attack'].get('alpha', "N/A")
+    test_attack_iter_cfg = cfg['test_attack'].get('num_iter', "N/A")
+    logger.info(f"  Test Attack Type: {test_attack_type_cfg.upper()}")
+    logger.info(f"  Test Attack Params (from cfg): Epsilon={test_attack_eps_cfg}, Alpha={test_attack_alpha_cfg}, Iter={test_attack_iter_cfg}")
+
 
 start_time = time.time()
 logger.info("--- Starting Optimization Loop ---")
@@ -279,7 +287,7 @@ else:
                  if prompt_clip.adv_train_config['enabled'] and prompt_clip.adv_train_config.get('sample_ratio', 1.0) < 1.0:
                      adv_train_info_str += f", SampleRatio: {prompt_clip.adv_train_config.get('sample_ratio', 1.0)}"
                  adv_train_info_str += ")" if prompt_clip.adv_train_config['enabled'] else ""
-                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}{adv_train_info_str}): {prompt_clip.best_objective_loss_value:.4f}, Best Train Acc: {prompt_clip.best_train_accuracy:.4f}, Best Test Acc: {prompt_clip.best_accuracy:.4f}, Best PGD Acc: {prompt_clip.best_accuracy_pgd:.4f}")
+                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}{adv_train_info_str}): {prompt_clip.best_objective_loss_value:.4f}, Best Train Acc: {prompt_clip.best_train_accuracy:.4f}, Best Test Acc: {prompt_clip.best_accuracy:.4f}, Best Attacked Acc: {prompt_clip.best_accuracy_attack:.4f}")
     else:
         logger.warning(f"Non-PyPop optimizer path not fully defined for task {args.task_name}")
 
@@ -292,17 +300,18 @@ logger.info("\n--- Final Evaluation using Best Prompts ---")
 final_acc_clean = prompt_clip.test(attack_config=None)
 logger.info(f"Final Clean Accuracy: {final_acc_clean:.4f}")
 
-final_acc_pgd = torch.tensor(0.0)
-if cfg['pgd']['enabled']:
+final_acc_attack = torch.tensor(0.0)
+if cfg['test_attack']['enabled']:
     if prompt_clip.best_prompt_text is not None:
-        final_acc_pgd = prompt_clip.test(attack_config=prompt_clip.pgd_config)
-        logger.info(f"Final PGD Accuracy  : {final_acc_pgd:.4f}")
+        final_acc_attack = prompt_clip.test(attack_config=prompt_clip.test_attack_config)
+        attack_name = cfg['test_attack']['attack_type'].upper()
+        logger.info(f"Final {attack_name} Accuracy  : {final_acc_attack:.4f}")
     else:
-        logger.info("Final PGD Accuracy  : Skipped (no best prompt available)")
-        final_acc_pgd = None
+        logger.info("Final Attacked Accuracy  : Skipped (no best prompt available)")
+        final_acc_attack = None
 else:
-    logger.info("Final PGD Accuracy  : Skipped (PGD test not enabled in args/config)")
-    final_acc_pgd = None
+    logger.info("Final Attacked Accuracy  : Skipped (test attack not enabled in args/config)")
+    final_acc_attack = None
 
 pth_filename = fname_base + "_final.pth"
 final_results_path = os.path.join(output_dir, pth_filename)
@@ -312,16 +321,16 @@ content = {
     "k_shot": cfg["k_shot"],
     "best_accuracy": prompt_clip.best_accuracy, "acc": prompt_clip.acc,
     "best_train_accuracy": prompt_clip.best_train_accuracy, "train_acc": prompt_clip.train_acc,
-    "best_accuracy_pgd": prompt_clip.best_accuracy_pgd, "acc_pgd": prompt_clip.acc_pgd,
+    "best_accuracy_attack": prompt_clip.best_accuracy_attack, "acc_attack": prompt_clip.acc_attack,
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
     "best_objective_loss_value": prompt_clip.best_objective_loss_value,
     "maximize_loss_setting": prompt_clip.maximize_loss,
     "loss": prompt_clip.loss, "num_call": prompt_clip.num_call,
     "final_acc_clean": final_acc_clean.item(),
-    "final_acc_pgd": final_acc_pgd.item() if isinstance(final_acc_pgd, torch.Tensor) else final_acc_pgd,
+    "final_acc_attack": final_acc_attack.item() if isinstance(final_acc_attack, torch.Tensor) else final_acc_attack,
     "Linear_L": prompt_clip.linear_L.state_dict(),
     "Linear_V": prompt_clip.linear_V.state_dict(),
-    "pgd_config_test": prompt_clip.pgd_config,
+    "test_attack_config": prompt_clip.test_attack_config,
     "adv_train_config": prompt_clip.adv_train_config,
     "optimization_time_seconds": optimization_time,
     "config_used": cfg,

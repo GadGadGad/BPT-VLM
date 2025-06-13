@@ -107,6 +107,18 @@ def run_fgsm_attack_batch(model_wrapper, image_batch_orig, label_batch, config, 
     # The final cast to the correct dtype is sufficient here as there is no loop
     return adv_images.detach().to(dtype)
 
+def run_gaussian_attack_batch(model_wrapper, image_batch_orig, label_batch, config, device, dtype):
+    """
+    Adds Gaussian noise to the batch of images.
+    """
+    epsilon = config['epsilon']
+    norm_lower_limit = config['norm_lower_limit']
+    norm_upper_limit = config['norm_upper_limit']
+    
+    noise = torch.randn_like(image_batch_orig, device=device) * epsilon
+    adv_images = (image_batch_orig + noise).clamp(min=norm_lower_limit, max=norm_upper_limit)
+    return adv_images.to(dtype)
+
 
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -202,6 +214,8 @@ def main(args):
             attack = lambda images, labels: run_pgd_attack_batch(model_wrapper, images, labels, custom_attack_config, device, model.dtype)
         elif args.attack_type == 'fgsm':
             attack = lambda images, labels: run_fgsm_attack_batch(model_wrapper, images, labels, custom_attack_config, device, model.dtype)
+        elif args.attack_type == 'gaussian':
+            attack = lambda images, labels: run_gaussian_attack_batch(model_wrapper, images, labels, custom_attack_config, device, model.dtype)
         elif args.attack_type == 'autoattack':
             attack = torchattacks.AutoAttack(model_wrapper, norm='Linf', eps=args.epsilon, version='standard')
             attack.set_normalization_used(mean=mean, std=std)
@@ -243,7 +257,7 @@ if __name__ == '__main__':
     parser.add_argument("checkpoint_path", type=str, help="Path to the trained model checkpoint (.pth file).")
     parser.add_argument("--task_name", type=str, default=None, choices=['CIFAR10', 'CIFAR100', 'CIFAR10_PGD'], help="Dataset to evaluate on. If not provided, it will be inferred from the checkpoint.")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for evaluation. Use a smaller size for C&W or AutoAttack.")
-    parser.add_argument('--attack_type', type=str, default='none', choices=['none', 'pgd', 'fgsm', 'autoattack', 'cw'], help='Type of adversarial attack for evaluation.')
+    parser.add_argument('--attack_type', type=str, default='none', choices=['none', 'pgd', 'fgsm', 'gaussian', 'autoattack', 'cw'], help='Type of adversarial attack for evaluation.')
     
     parser.add_argument('--epsilon', type=float, default=8/255, help='Epsilon for adversarial attacks.')
     parser.add_argument('--alpha', type=float, default=2/255, help='Alpha/step size for PGD attack.')

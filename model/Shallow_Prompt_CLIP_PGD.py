@@ -33,7 +33,7 @@ class PromptCLIP_Shallow:
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
         self.loss = []
         self.acc = []
-        self.acc_pgd = []
+        self.acc_attack = []
         self.train_acc = []
         self.test_attack_config = cfg.get("test_attack", {"enabled": False})
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
@@ -55,13 +55,11 @@ class PromptCLIP_Shallow:
 
         if self.adv_train_config["enabled"]:
             logger.info("--- Adversarial Prompt Optimization ENABLED ---")
-            logger.info(f"  Training Attack Type: {self.adv_train_attack_type}")
+            logger.info(f"  Training Attack Type: {self.adv_train_attack_type.upper()}")
             logger.info(f"  Training Attack Config: \
                         Epsilon={self.adv_train_config['epsilon']}, \
                         Alpha={self.adv_train_config['alpha']}, \
                         Iter={self.adv_train_config['num_iter']}")
-            if self.adv_train_attack_type == 'cw':
-                logger.info(f"  Training C&W Config: C={self.adv_train_config['c']}, Kappa={self.adv_train_config['kappa']}")
             logger.info(f"  Adversarial Attack Prompt Type for Training: {self.adv_train_attack_prompt_type}")
             logger.info(f"  Adversarial Training Sample Ratio: {self.adv_train_config.get('sample_ratio', 1.0)}")
             logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0." \
@@ -69,6 +67,7 @@ class PromptCLIP_Shallow:
                 "  Adversarial tuning will occur for the whole progress.")
         else:
             logger.info("--- Standard (Clean) Prompt Optimization ---")
+        
         if self.test_attack_config["enabled"] or self.adv_train_config["enabled"]:
             logger.info("Adversarial Operations (Test or Train) ENABLED.")
             mean = self.preprocess.transforms[-1].mean
@@ -78,15 +77,15 @@ class PromptCLIP_Shallow:
             self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
             self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
             if self.test_attack_config["enabled"]:
-                logger.info(f"  Test Attack Type: {self.test_attack_config.get('attack_type', 'N/A')}")
+                attack_type = self.test_attack_config.get('attack_type', 'N/A').upper()
+                logger.info(f"  Test Attack Type: {attack_type}")
                 logger.info(f"  Test Attack Config: \
                             Epsilon={self.test_attack_config.get('epsilon', 'N/A')},\
                             Alpha={self.test_attack_config.get('alpha', 'N/A')},\
                             Iter={self.test_attack_config.get('num_iter', 'N/A')}")
-                if self.test_attack_config.get('attack_type') == 'cw':
-                     logger.info(f"  Test C&W Config: C={self.test_attack_config.get('c', 'N/A')}, Kappa={self.test_attack_config.get('kappa', 'N/A')}")
         else:
             logger.info("Adversarial Testing DISABLED.")
+
 
         # Text Encoder
         self.n_prompt_tokens_L = cfg["n_prompt_tokens_L"]
@@ -109,7 +108,7 @@ class PromptCLIP_Shallow:
         self.best_prompt_text = None
         self.best_prompt_image = None
         self.best_accuracy = 0.0
-        self.best_accuracy_pgd = 0.0
+        self.best_accuracy_attack = 0.0
         self.best_train_accuracy = 0.0
         self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize
         self.sigma = cfg["sigma"]
@@ -597,9 +596,9 @@ class PromptCLIP_Shallow:
             if self.test_attack_config["enabled"] and self.best_prompt_text is not None:
                 attack_name = self.test_attack_config['attack_type'].upper()
                 acc_attacked = self.test(attack_config=self.test_attack_config)
-                self.acc_pgd.append(acc_attacked.item())
-                self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
-                logger.info(f"{attack_name} Accuracy (Test): {acc_attacked:.4f} (Best {attack_name}: {self.best_accuracy_pgd:.4f})")
+                self.acc_attack.append(acc_attacked.item())
+                self.best_accuracy_attack = max(acc_attacked.item(), self.best_accuracy_attack)
+                logger.info(f"{attack_name} Accuracy (Test): {acc_attacked:.4f} (Best {attack_name}: {self.best_accuracy_attack:.4f})")
             elif self.test_attack_config["enabled"]:
                  logger.info("Attacked Accuracy (Test): Skipped (no best prompt yet)")
             elif not self.test_attack_config["enabled"]:
@@ -613,11 +612,11 @@ class PromptCLIP_Shallow:
             
             initial_prompt_str_fn = f"_initPrompt" if self.initial_prompt_text is not None else ""
             learned_pos_str_fn = f"_pos{self.learned_prompt_pos}"
-            test_attack_str_fn = f"_{self.test_attack_config['attack_type']}Test" if self.test_attack_config['enabled'] else "_cleanTest"
+            test_attack_str_fn = f"_testAttack{self.test_attack_config['attack_type']}" if self.test_attack_config['enabled'] else "_testAttackNone"
 
             fname = "{}{}{}_{}_{}_parallel{}_advTrain{}{}{}{}{}_maxLoss{}.pth".format(
-                self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn, 
-                self.opt_name, self.backbone.replace("/","-"),
+                self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn,
+                self.opt_name, self.backbone.replace("/", "-"),
                 self.parallel,
                 self.adv_train_config["enabled"],
                 adv_train_attack_type_str_fn,
@@ -627,10 +626,11 @@ class PromptCLIP_Shallow:
                 self.maximize_loss
             )
 
+
             content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
                        "best_accuracy":self.best_accuracy, "acc":self.acc,
                        "best_train_accuracy": self.best_train_accuracy, "train_acc": self.train_acc,
-                       "best_accuracy_pgd": self.best_accuracy_pgd, "acc_pgd": self.acc_pgd,
+                       "best_accuracy_attack": self.best_accuracy_attack, "acc_attack": self.acc_attack,
                        "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
                        "training_dataset_snapshot": self._training_dataset_snapshot,
                        "historical_losses":self.loss,
@@ -685,48 +685,52 @@ class PromptCLIP_Shallow:
         clean_labels = labels[clean_indices]
         
         return adv_images, adv_labels, clean_images, clean_labels
+        
     def _run_adversarial_attack(self, images, labels, text_features_for_attack, image_prompt, config, attack_type, text_prompt_to_perturb=None):
         """
         Generates adversarial examples based on the configured attack type.
         Assumes torch.enable_grad() is handled by the caller.
         """
         images_orig = images.clone().detach()
-
-        # Shared parameters
         epsilon = config['epsilon']
-        alpha_text_prompt = config.get('alpha_text_prompt', config.get('alpha'))
         
-        # Attack-specific parameters
-        if attack_type in ["pgd", "cw"]:
-            alpha_img = config['alpha']
-            num_iter = config['num_iter']
-        elif attack_type == "fgsm":
-            alpha_img = config['epsilon'] # FGSM uses epsilon as the step size
-            num_iter = 1
-        elif attack_type == "gaussian":
+        if attack_type == "gaussian":
             noise = torch.randn_like(images_orig, device=self.device) * epsilon
             final_perturbed_image = (images_orig + noise).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
-            return final_perturbed_image, None
+            return final_perturbed_image, None # No text perturbation for gaussian
+        
+        # --- Parameters for PGD/FGSM ---
+        alpha_text_prompt = config.get('alpha_text_prompt', config.get('alpha'))
+        
+        if attack_type == "fgsm":
+            alpha_img = epsilon # FGSM uses epsilon as the step size
+            num_iter = 1
+        elif attack_type == "pgd":
+            alpha_img = config['alpha']
+            num_iter = config['num_iter']
         else:
-            raise ValueError(f"Unsupported adversarial attack type: {attack_type}")
+            raise ValueError(f"Unsupported adversarial attack type for iterative method: {attack_type}")
 
-        # Initialize perturbation
+        # --- Initialize Perturbations ---
+        # Image perturbation with random start
         delta_img = torch.zeros_like(images_orig, requires_grad=True, device=self.device).to(images_orig.dtype)
         delta_img.data.uniform_(-epsilon, epsilon)
         delta_img.data = torch.clamp(images_orig + delta_img.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images_orig
         delta_img.data = delta_img.data.to(images_orig.dtype)
         
+        # Text prompt perturbation
         delta_text_prompt = None
         if text_prompt_to_perturb is not None:
             delta_text_prompt = torch.zeros_like(text_prompt_to_perturb, requires_grad=True, device=self.device).to(text_prompt_to_perturb.dtype)
 
-        # Iterative attack loop
-        for iter_idx in range(num_iter):
+        # --- Iterative Attack Loop ---
+        for _ in range(num_iter):
             grads_to_compute = []
             delta_img.requires_grad_(True)
             grads_to_compute.append(delta_img)
             perturbed_image = (images_orig + delta_img).to(self.dtype)
 
+            # Determine text features for this iteration (either fixed or perturbed)
             effective_text_features_for_iter = text_features_for_attack
             if text_prompt_to_perturb is not None and delta_text_prompt is not None:
                 delta_text_prompt.requires_grad_(True)
@@ -735,6 +739,7 @@ class PromptCLIP_Shallow:
                 effective_text_features_for_iter = self.text_encoder(perturbed_text_prompt_iter)
                 effective_text_features_for_iter = effective_text_features_for_iter / effective_text_features_for_iter.norm(dim=-1, keepdim=True)
 
+            # --- Forward Pass ---
             original_im_parallel_state_eval = self.image_encoder.parallel
             self.image_encoder.parallel = False # Ensure single processing during attack step
             image_features = self.image_encoder(perturbed_image, image_prompt)
@@ -742,34 +747,24 @@ class PromptCLIP_Shallow:
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             logits = self.logit_scale.exp() * image_features @ effective_text_features_for_iter.t()
+            loss = F.cross_entropy(logits, labels)
 
-            # --- Loss Calculation ---
-            if attack_type in ["pgd", "fgsm"]:
-                loss = F.cross_entropy(logits, labels)
-            elif attack_type == "cw":
-                kappa = config['kappa']
-                one_hot_labels = F.one_hot(labels, num_classes=logits.shape[1]).to(logits.dtype)
-                correct_logits = torch.sum(one_hot_labels * logits, dim=1)
-                other_logits_max = torch.max((1 - one_hot_labels) * logits - one_hot_labels * 1e9, dim=1)[0]
-                # We want to maximize this loss to increase the gap of other vs correct
-                loss = torch.sum(torch.clamp(other_logits_max - correct_logits, min=-kappa))
-
-            all_grads = torch.autograd.grad(loss, grads_to_compute,
-                                             only_inputs=True,
-                                             retain_graph=False,
-                                             create_graph=False)
+            # --- Backward Pass ---
+            all_grads = torch.autograd.grad(loss, grads_to_compute, only_inputs=True)
             
-            # --- Update Step ---
+            # --- Update Step for Image ---
             delta_img_grad = all_grads[0]
             grad_sign_img = delta_img_grad.sign()
             delta_img.data = delta_img.data + alpha_img * grad_sign_img.to(delta_img.dtype)
             delta_img.data = torch.clamp(delta_img.data, -epsilon, epsilon)
             delta_img.data = torch.clamp(images_orig + delta_img.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images_orig
 
+            # --- Update Step for Text (if applicable) ---
             if text_prompt_to_perturb is not None and delta_text_prompt is not None:
                 delta_text_prompt_grad = all_grads[1]
                 delta_text_prompt.data = delta_text_prompt.data + alpha_text_prompt * delta_text_prompt_grad.to(delta_text_prompt.dtype)
 
+        # --- Finalize Perturbations ---
         final_perturbed_image = (images_orig + delta_img.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
         final_perturbed_text_prompt = None
         if text_prompt_to_perturb is not None and delta_text_prompt is not None:
