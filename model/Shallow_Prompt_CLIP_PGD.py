@@ -35,7 +35,7 @@ class PromptCLIP_Shallow:
         self.acc = []
         self.acc_pgd = []
         self.train_acc = []
-        self.pgd_config = cfg.get("pgd", {"enabled": False})
+        self.test_attack_config = cfg.get("test_attack", {"enabled": False})
         self.adv_train_config = cfg.get("adv_train", {"enabled": False})
         self.adv_train_attack_prompt_type = self.adv_train_config.get("attack_prompt_type", "on-the-fly")
         self.adv_train_attack_type = self.adv_train_config.get("attack_type", "pgd")
@@ -56,10 +56,12 @@ class PromptCLIP_Shallow:
         if self.adv_train_config["enabled"]:
             logger.info("--- Adversarial Prompt Optimization ENABLED ---")
             logger.info(f"  Training Attack Type: {self.adv_train_attack_type}")
-            logger.info(f"  Training PGD Config: \
+            logger.info(f"  Training Attack Config: \
                         Epsilon={self.adv_train_config['epsilon']}, \
                         Alpha={self.adv_train_config['alpha']}, \
                         Iter={self.adv_train_config['num_iter']}")
+            if self.adv_train_attack_type == 'cw':
+                logger.info(f"  Training C&W Config: C={self.adv_train_config['c']}, Kappa={self.adv_train_config['kappa']}")
             logger.info(f"  Adversarial Attack Prompt Type for Training: {self.adv_train_attack_prompt_type}")
             logger.info(f"  Adversarial Training Sample Ratio: {self.adv_train_config.get('sample_ratio', 1.0)}")
             logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0." \
@@ -67,21 +69,24 @@ class PromptCLIP_Shallow:
                 "  Adversarial tuning will occur for the whole progress.")
         else:
             logger.info("--- Standard (Clean) Prompt Optimization ---")
-        if self.pgd_config["enabled"] or self.adv_train_config["enabled"]:
-            logger.info("PGD Operations (Test or Train) ENABLED.")
+        if self.test_attack_config["enabled"] or self.adv_train_config["enabled"]:
+            logger.info("Adversarial Operations (Test or Train) ENABLED.")
             mean = self.preprocess.transforms[-1].mean
             std = self.preprocess.transforms[-1].std
             self.norm_mean = torch.tensor(mean).to(self.device).view(3, 1, 1)
             self.norm_std = torch.tensor(std).to(self.device).view(3, 1, 1)
             self.norm_upper_limit = ((1 - self.norm_mean) / self.norm_std).to(self.device)
             self.norm_lower_limit = ((0 - self.norm_mean) / self.norm_std).to(self.device)
-            if self.pgd_config["enabled"]:
-                logger.info(f"  Test PGD Config: \
-                            Epsilon={self.pgd_config.get('epsilon', 'N/A')},\
-                            Alpha={self.pgd_config.get('alpha', 'N/A')},\
-                            Iter={self.pgd_config.get('num_iter', 'N/A')}")
+            if self.test_attack_config["enabled"]:
+                logger.info(f"  Test Attack Type: {self.test_attack_config.get('attack_type', 'N/A')}")
+                logger.info(f"  Test Attack Config: \
+                            Epsilon={self.test_attack_config.get('epsilon', 'N/A')},\
+                            Alpha={self.test_attack_config.get('alpha', 'N/A')},\
+                            Iter={self.test_attack_config.get('num_iter', 'N/A')}")
+                if self.test_attack_config.get('attack_type') == 'cw':
+                     logger.info(f"  Test C&W Config: C={self.test_attack_config.get('c', 'N/A')}, Kappa={self.test_attack_config.get('kappa', 'N/A')}")
         else:
-            logger.info("PGD Testing DISABLED.")
+            logger.info("Adversarial Testing DISABLED.")
 
         # Text Encoder
         self.n_prompt_tokens_L = cfg["n_prompt_tokens_L"]
@@ -379,19 +384,12 @@ class PromptCLIP_Shallow:
                             num_clean_samples = clean_images_part.size(0)
                             perturbed_text_prompt_from_attack = None
                             if num_adv_samples > 0:
-                                if self.adv_train_attack_type == "pgd":
-                                    with torch.enable_grad():
-                                        adv_images_perturbed, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
-                                            images=adv_images_to_perturb, labels=adv_labels,
-                                            text_features_for_attack=pgd_text_features_guidance,
-                                            image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
-                                            text_prompt_to_perturb=pgd_text_prompt_to_perturb
-                                        )
-                                else: # For Gaussian, gradients are not needed for attack generation
+                                with torch.enable_grad():
                                     adv_images_perturbed, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
                                         images=adv_images_to_perturb, labels=adv_labels,
                                         text_features_for_attack=pgd_text_features_guidance,
                                         image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
+                                        attack_type=self.adv_train_attack_type,
                                         text_prompt_to_perturb=pgd_text_prompt_to_perturb
                                     )
                                 adv_images_perturbed = adv_images_perturbed.to(self.dtype)
@@ -414,19 +412,12 @@ class PromptCLIP_Shallow:
                                 clean_logits = logit_scale * clean_image_features @ current_txt_features_for_loss.t()
                                 loss_for_member_batch_i += self.metric(clean_logits, clean_labels_part)
                         else: # Full adversarial batch for this member
-                            if self.adv_train_attack_type == "pgd":
-                                with torch.enable_grad():
-                                    eval_image_i, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
-                                        images=current_clean_images_for_member, labels=current_labels_for_member,
-                                        text_features_for_attack=pgd_text_features_guidance,
-                                        image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
-                                        text_prompt_to_perturb=pgd_text_prompt_to_perturb
-                                    )
-                            else: # For Gaussian, gradients are not needed for attack generation
+                            with torch.enable_grad():
                                 eval_image_i, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
                                     images=current_clean_images_for_member, labels=current_labels_for_member,
                                     text_features_for_attack=pgd_text_features_guidance,
                                     image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
+                                    attack_type=self.adv_train_attack_type,
                                     text_prompt_to_perturb=pgd_text_prompt_to_perturb
                                 )
                             eval_image_i = eval_image_i.to(self.dtype)
@@ -469,20 +460,13 @@ class PromptCLIP_Shallow:
                         num_clean_samples = clean_images_part.size(0)
                         perturbed_text_prompt_from_attack = None
                         if num_adv_samples > 0:
-                            if self.adv_train_attack_type == "pgd":
-                                with torch.enable_grad():
-                                    adv_images_perturbed, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
-                                        images=adv_images_to_perturb, labels=adv_labels,
-                                        text_features_for_attack=text_features_for_attack_generation,
-                                        image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
-                                        text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
-                                    )
-                            else: # For Gaussian, gradients are not needed for attack generation
+                            with torch.enable_grad():
                                 adv_images_perturbed, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
                                     images=adv_images_to_perturb, labels=adv_labels,
                                     text_features_for_attack=text_features_for_attack_generation,
                                     image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
-                                    text_prompt_to_perturb=text_prompt_to_perturb
+                                    attack_type=self.adv_train_attack_type,
+                                    text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
                                 )
                             adv_images_perturbed = adv_images_perturbed.to(self.dtype)
 
@@ -504,20 +488,13 @@ class PromptCLIP_Shallow:
                             clean_logits = logit_scale * clean_image_features @ current_txt_features_for_loss.t()
                             loss_for_candidate_batch += self.metric(clean_logits, clean_labels_part)
                     else: # Full adversarial batch for this candidate
-                        if self.adv_train_attack_type == "pgd":
-                            with torch.enable_grad():
-                                eval_image, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
-                                    images=current_clean_images, labels=current_labels,
-                                    text_features_for_attack=text_features_for_attack_generation,
-                                    image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
-                                    text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
-                                )
-                        else: # For Gaussian, gradients are not needed for attack generation
+                        with torch.enable_grad():
                             eval_image, perturbed_text_prompt_from_attack = self._run_adversarial_attack(
                                 images=current_clean_images, labels=current_labels,
                                 text_features_for_attack=text_features_for_attack_generation,
                                 image_prompt=current_img_prompt_for_loss, config=self.adv_train_config,
-                                text_prompt_to_perturb=text_prompt_to_perturb
+                                attack_type=self.adv_train_attack_type,
+                                text_prompt_to_perturb=text_prompt_for_attack_generation_perturbed
                             )
                         eval_image = eval_image.to(self.dtype)
 
@@ -617,15 +594,16 @@ class PromptCLIP_Shallow:
             logger.info(f"Test Clean Accuracy: {acc_clean:.4f} (Best Test Clean: {self.best_accuracy:.4f})")
 
             acc_attacked = torch.tensor(0.0)
-            if self.pgd_config["enabled"] and self.best_prompt_text is not None:
-                acc_attacked = self.test(attack_config=self.pgd_config)
+            if self.test_attack_config["enabled"] and self.best_prompt_text is not None:
+                attack_name = self.test_attack_config['attack_type'].upper()
+                acc_attacked = self.test(attack_config=self.test_attack_config)
                 self.acc_pgd.append(acc_attacked.item())
                 self.best_accuracy_pgd = max(acc_attacked.item(), self.best_accuracy_pgd)
-                logger.info(f"PGD Accuracy (Test): {acc_attacked:.4f} (Best PGD: {self.best_accuracy_pgd:.4f})")
-            elif self.pgd_config["enabled"]:
-                 logger.info("PGD Accuracy (Test): Skipped (no best prompt yet)")
-            elif not self.pgd_config["enabled"]:
-                 logger.info("PGD Accuracy (Test): Disabled in config")
+                logger.info(f"{attack_name} Accuracy (Test): {acc_attacked:.4f} (Best {attack_name}: {self.best_accuracy_pgd:.4f})")
+            elif self.test_attack_config["enabled"]:
+                 logger.info("Attacked Accuracy (Test): Skipped (no best prompt yet)")
+            elif not self.test_attack_config["enabled"]:
+                 logger.info("Attacked Accuracy (Test): Disabled in config")
 
 
             output_dir = os.path.join(self.output_dir,self.task_name)
@@ -635,15 +613,17 @@ class PromptCLIP_Shallow:
             
             initial_prompt_str_fn = f"_initPrompt" if self.initial_prompt_text is not None else ""
             learned_pos_str_fn = f"_pos{self.learned_prompt_pos}"
-            fname = "{}{}{}_{}_{}_parallel{}_advTrain{}{}{}{}_pgdTest{}_maxLoss{}.pth".format(
-                self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn, # Added here
+            test_attack_str_fn = f"_{self.test_attack_config['attack_type']}Test" if self.test_attack_config['enabled'] else "_cleanTest"
+
+            fname = "{}{}{}_{}_{}_parallel{}_advTrain{}{}{}{}{}_maxLoss{}.pth".format(
+                self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn, 
                 self.opt_name, self.backbone.replace("/","-"),
                 self.parallel,
                 self.adv_train_config["enabled"],
                 adv_train_attack_type_str_fn,
                 adv_train_attack_prompt_type_str_fn,
                 adv_train_sample_ratio_str_fn,
-                self.pgd_config["enabled"],
+                test_attack_str_fn,
                 self.maximize_loss
             )
 
@@ -658,7 +638,7 @@ class PromptCLIP_Shallow:
                        "maximize_loss_setting": self.maximize_loss,
                        "num_call":self.num_call,
                        "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict(),
-                       "pgd_config_test": self.pgd_config,
+                       "test_attack_config": self.test_attack_config,
                        "adv_train_config": self.adv_train_config}
             Analysis_Util.save_results(content,output_dir,fname)
 
@@ -705,84 +685,97 @@ class PromptCLIP_Shallow:
         clean_labels = labels[clean_indices]
         
         return adv_images, adv_labels, clean_images, clean_labels
-    def _run_adversarial_attack(self, images, labels, text_features_for_attack, image_prompt, config, text_prompt_to_perturb=None):
+    def _run_adversarial_attack(self, images, labels, text_features_for_attack, image_prompt, config, attack_type, text_prompt_to_perturb=None):
         """
-        Generates adversarial examples based on the configured attack type (PGD or Gaussian).
-        Assumes torch.enable_grad() is handled by the caller if gradients are needed.
+        Generates adversarial examples based on the configured attack type.
+        Assumes torch.enable_grad() is handled by the caller.
         """
-        attack_type = self.adv_train_attack_type
         images_orig = images.clone().detach()
 
-        if attack_type == "pgd":
-            epsilon = config['epsilon']
+        # Shared parameters
+        epsilon = config['epsilon']
+        alpha_text_prompt = config.get('alpha_text_prompt', config.get('alpha'))
+        
+        # Attack-specific parameters
+        if attack_type in ["pgd", "cw"]:
             alpha_img = config['alpha']
             num_iter = config['num_iter']
-            alpha_text_prompt = config.get('alpha_text_prompt', alpha_img)
-
-            delta_img = torch.zeros_like(images_orig, requires_grad=True, device=self.device).to(images_orig.dtype)
-            delta_img.data.uniform_(-epsilon, epsilon)
-            delta_img.data = torch.clamp(images_orig + delta_img.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images_orig
-            delta_img.data = delta_img.data.to(images_orig.dtype)
-
-            delta_text_prompt = None
-            if text_prompt_to_perturb is not None:
-                delta_text_prompt = torch.zeros_like(text_prompt_to_perturb, requires_grad=True, device=self.device).to(text_prompt_to_perturb.dtype)
-
-            for iter_idx in range(num_iter):
-                grads_to_compute = []
-
-                delta_img.requires_grad_(True)
-                grads_to_compute.append(delta_img)
-                perturbed_image = (images_orig + delta_img).to(self.dtype)
-
-                effective_text_features_for_iter = text_features_for_attack
-                if text_prompt_to_perturb is not None and delta_text_prompt is not None:
-                    delta_text_prompt.requires_grad_(True)
-                    grads_to_compute.append(delta_text_prompt)
-                    perturbed_text_prompt_iter = text_prompt_to_perturb + delta_text_prompt
-                    effective_text_features_for_iter = self.text_encoder(perturbed_text_prompt_iter)
-                    effective_text_features_for_iter = effective_text_features_for_iter / effective_text_features_for_iter.norm(dim=-1, keepdim=True)
-
-                original_im_parallel_state_eval = self.image_encoder.parallel
-                self.image_encoder.parallel = False # Ensure single processing during attack step
-                image_features = self.image_encoder(perturbed_image, image_prompt)
-                self.image_encoder.parallel = original_im_parallel_state_eval
-
-                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                logits = self.logit_scale.exp() * image_features @ effective_text_features_for_iter.t()
-                loss = F.cross_entropy(logits, labels)
-
-                all_grads = torch.autograd.grad(loss, grads_to_compute,
-                                                 only_inputs=True,
-                                                 retain_graph=False,
-                                                 create_graph=False
-                                                 )
-                delta_img_grad = all_grads[0]
-                grad_sign_img = delta_img_grad.sign()
-                delta_img.data = delta_img.data + alpha_img * grad_sign_img.to(delta_img.dtype)
-                delta_img.data = torch.clamp(delta_img.data, -epsilon, epsilon)
-                delta_img.data = torch.clamp(images_orig + delta_img.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images_orig
-
-                if text_prompt_to_perturb is not None and delta_text_prompt is not None:
-                    delta_text_prompt_grad = all_grads[1]
-                    delta_text_prompt.data = delta_text_prompt.data + alpha_text_prompt * delta_text_prompt_grad.to(delta_text_prompt.dtype)
-
-            final_perturbed_image = (images_orig + delta_img.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
-            final_perturbed_text_prompt = None
-            if text_prompt_to_perturb is not None and delta_text_prompt is not None:
-                final_perturbed_text_prompt = (text_prompt_to_perturb + delta_text_prompt.detach()).to(text_prompt_to_perturb.dtype)
-
-            return final_perturbed_image, final_perturbed_text_prompt
-
+        elif attack_type == "fgsm":
+            alpha_img = config['epsilon'] # FGSM uses epsilon as the step size
+            num_iter = 1
         elif attack_type == "gaussian":
-            epsilon = config['epsilon']
-
             noise = torch.randn_like(images_orig, device=self.device) * epsilon
             final_perturbed_image = (images_orig + noise).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
             return final_perturbed_image, None
-
         else:
             raise ValueError(f"Unsupported adversarial attack type: {attack_type}")
+
+        # Initialize perturbation
+        delta_img = torch.zeros_like(images_orig, requires_grad=True, device=self.device).to(images_orig.dtype)
+        delta_img.data.uniform_(-epsilon, epsilon)
+        delta_img.data = torch.clamp(images_orig + delta_img.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images_orig
+        delta_img.data = delta_img.data.to(images_orig.dtype)
+        
+        delta_text_prompt = None
+        if text_prompt_to_perturb is not None:
+            delta_text_prompt = torch.zeros_like(text_prompt_to_perturb, requires_grad=True, device=self.device).to(text_prompt_to_perturb.dtype)
+
+        # Iterative attack loop
+        for iter_idx in range(num_iter):
+            grads_to_compute = []
+            delta_img.requires_grad_(True)
+            grads_to_compute.append(delta_img)
+            perturbed_image = (images_orig + delta_img).to(self.dtype)
+
+            effective_text_features_for_iter = text_features_for_attack
+            if text_prompt_to_perturb is not None and delta_text_prompt is not None:
+                delta_text_prompt.requires_grad_(True)
+                grads_to_compute.append(delta_text_prompt)
+                perturbed_text_prompt_iter = text_prompt_to_perturb + delta_text_prompt
+                effective_text_features_for_iter = self.text_encoder(perturbed_text_prompt_iter)
+                effective_text_features_for_iter = effective_text_features_for_iter / effective_text_features_for_iter.norm(dim=-1, keepdim=True)
+
+            original_im_parallel_state_eval = self.image_encoder.parallel
+            self.image_encoder.parallel = False # Ensure single processing during attack step
+            image_features = self.image_encoder(perturbed_image, image_prompt)
+            self.image_encoder.parallel = original_im_parallel_state_eval
+
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            logits = self.logit_scale.exp() * image_features @ effective_text_features_for_iter.t()
+
+            # --- Loss Calculation ---
+            if attack_type in ["pgd", "fgsm"]:
+                loss = F.cross_entropy(logits, labels)
+            elif attack_type == "cw":
+                kappa = config['kappa']
+                one_hot_labels = F.one_hot(labels, num_classes=logits.shape[1]).to(logits.dtype)
+                correct_logits = torch.sum(one_hot_labels * logits, dim=1)
+                other_logits_max = torch.max((1 - one_hot_labels) * logits - one_hot_labels * 1e9, dim=1)[0]
+                # We want to maximize this loss to increase the gap of other vs correct
+                loss = torch.sum(torch.clamp(other_logits_max - correct_logits, min=-kappa))
+
+            all_grads = torch.autograd.grad(loss, grads_to_compute,
+                                             only_inputs=True,
+                                             retain_graph=False,
+                                             create_graph=False)
+            
+            # --- Update Step ---
+            delta_img_grad = all_grads[0]
+            grad_sign_img = delta_img_grad.sign()
+            delta_img.data = delta_img.data + alpha_img * grad_sign_img.to(delta_img.dtype)
+            delta_img.data = torch.clamp(delta_img.data, -epsilon, epsilon)
+            delta_img.data = torch.clamp(images_orig + delta_img.data, min=self.norm_lower_limit, max=self.norm_upper_limit) - images_orig
+
+            if text_prompt_to_perturb is not None and delta_text_prompt is not None:
+                delta_text_prompt_grad = all_grads[1]
+                delta_text_prompt.data = delta_text_prompt.data + alpha_text_prompt * delta_text_prompt_grad.to(delta_text_prompt.dtype)
+
+        final_perturbed_image = (images_orig + delta_img.detach()).clamp(min=self.norm_lower_limit, max=self.norm_upper_limit).to(self.dtype)
+        final_perturbed_text_prompt = None
+        if text_prompt_to_perturb is not None and delta_text_prompt is not None:
+            final_perturbed_text_prompt = (text_prompt_to_perturb + delta_text_prompt.detach()).to(text_prompt_to_perturb.dtype)
+
+        return final_perturbed_image, final_perturbed_text_prompt
 
 
     @torch.no_grad()
@@ -866,11 +859,12 @@ class PromptCLIP_Shallow:
             if is_attack_test:
                 with torch.enable_grad():
                     eval_image, _ = self._run_adversarial_attack( 
-                        image,
-                        label,
-                        current_text_features_for_test, 
-                        current_image_prompt_for_test,
-                        attack_config, 
+                        images=image,
+                        labels=label,
+                        text_features_for_attack=current_text_features_for_test, 
+                        image_prompt=current_image_prompt_for_test,
+                        config=attack_config, 
+                        attack_type=attack_config['attack_type'],
                         text_prompt_to_perturb=None 
                     )
                 eval_image = eval_image.to(self.dtype)
@@ -905,7 +899,7 @@ class PromptCLIP_Shallow:
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
         elif self.task_name == 'CIFAR10_PGD': # This seems to imply pre-attacked data, be careful
             self.train_data,self.train_loader = load_train_cifar10_pgd(batch_size=self.batch_size,shots=self.k_shot)
-            if self.pgd_config["enabled"]: # If PGD test enabled, use PGD test set
+            if self.test_attack_config["enabled"]: # If attack test enabled, use PGD test set
                 self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
             else: # Else use clean CIFAR10 test set
                 self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)

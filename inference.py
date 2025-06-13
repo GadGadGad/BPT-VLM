@@ -48,17 +48,10 @@ def run_pgd_attack_batch(model_wrapper, image_batch_orig, label_batch, config, d
     epsilon, alpha, num_iter = config['epsilon'], config['alpha'], config['num_iter']
     norm_lower_limit = config['norm_lower_limit']
     norm_upper_limit = config['norm_upper_limit']
-
-    # Start with a clone of the original images. image_batch_orig is already the correct dtype (e.g., float16)
     adv_images = image_batch_orig.clone().detach()
-
-    # --- RANDOM START ---
-    # Initialize perturbation with random noise and clamp to valid range
     delta = torch.empty_like(adv_images).uniform_(-epsilon, epsilon)
     adv_images = adv_images + delta
     adv_images = torch.clamp(adv_images, min=norm_lower_limit, max=norm_upper_limit)
-    # The result of the above operations could be float32, so cast it back to the
-    # model's expected dtype before the first iteration.
     adv_images = adv_images.to(dtype)
 
     for _ in range(num_iter):
