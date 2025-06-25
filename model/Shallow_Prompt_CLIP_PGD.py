@@ -28,6 +28,7 @@ class PromptCLIP_Shallow:
         self.seed = cfg["seed"]
         self.initial_prompt_text = cfg.get("initial_prompt_text", None)
         self.learned_prompt_pos = cfg.get("learned_prompt_pos", "prefix")
+        self.test_every_gens = cfg.get("test_every_n_gens", None) # <-- NEW
         self.num_call = 0
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
@@ -62,9 +63,10 @@ class PromptCLIP_Shallow:
                         Iter={self.adv_train_config['num_iter']}")
             logger.info(f"  Adversarial Attack Prompt Type for Training: {self.adv_train_attack_prompt_type}")
             logger.info(f"  Adversarial Training Sample Ratio: {self.adv_train_config.get('sample_ratio', 1.0)}")
-            logger.info(f"  Adversarial tuning will occur when self.num_call % self.test_every == 0." \
-                if not self.adv_train_config.get('all_call',False) else \
-                "  Adversarial tuning will occur for the whole progress.")
+            if not self.adv_train_config.get('all_call', False) and self.test_every_gens is not None:
+                logger.info(f"  Periodic adversarial tuning will occur every {self.test_every_gens} generations.")
+            elif self.adv_train_config.get('all_call', False):
+                logger.info("  Adversarial tuning will occur for the whole progress.")
         else:
             logger.info("--- Standard (Clean) Prompt Optimization ---")
         
@@ -110,7 +112,6 @@ class PromptCLIP_Shallow:
         self.best_accuracy = 0.0
         self.best_accuracy_attack = 0.0
         self.best_train_accuracy = 0.0
-        self.test_every = cfg["test_every"] if self.parallel else cfg["test_every"]*self.popsize
         self.sigma = cfg["sigma"]
         # Language Linear Layer
         self.linear_L = torch.nn.Linear(self.intrinsic_dim_L, self.n_prompt_tokens_L * self.ctx_dim_L,
@@ -303,8 +304,11 @@ class PromptCLIP_Shallow:
         if self.adv_train_config["enabled"]:
             if self.adv_train_config.get("all_call", False):
                 is_current_eval_adversarial = True
-            elif self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0):
-                 is_current_eval_adversarial = True
+            elif self.test_every_gens is not None and self.test_every_gens > 0:
+                # Synchronize periodic adv training with periodic testing
+                trigger_interval = self.test_every_gens if self.parallel else self.test_every_gens * self.popsize
+                if self.num_call > 0 and (self.num_call % trigger_interval == 0):
+                    is_current_eval_adversarial = True
 
 
         loss_accumulator = 0
@@ -568,79 +572,79 @@ class PromptCLIP_Shallow:
             
             logger.info(f"*** New best {objective_type_str} ({adv_status_str} eval{attack_type_str_info}) loss found: {self.best_objective_loss_value:.4f} (at call {self.num_call}) ***")
 
-        # Test_every condition for logging and saving intermediate results.
-        # Note: self.num_call increments once per candidate if sequential, once per population if parallel.
-        # self.test_every is already scaled based on self.parallel in __init__.
-        # So, this check should correctly trigger at similar "generation" counts.
-        if self.num_call > 0 and self.test_every > 0 and (self.num_call % self.test_every == 0):
-            # Calculate train accuracy with the current best prompts
-            acc_train_current = self.test_on_train_set()
-            self.train_acc.append(acc_train_current.item())
-            self.best_train_accuracy = acc_train_current.item()
-
-            eval_loss_type_str = "adversarial" if is_current_eval_adversarial else "clean"
-            obj_str = "maximize" if self.maximize_loss else "minimize"
-            attack_gen_type_str = f"(AttackType: {self.adv_train_attack_type}, AttackGen: {self.adv_train_attack_prompt_type}"
-            if is_current_eval_adversarial and self.adv_train_config.get('sample_ratio', 1.0) < 1.0:
-                attack_gen_type_str += f", SampleRatio: {self.adv_train_config.get('sample_ratio', 1.0)}"
-            attack_gen_type_str += ")" if is_current_eval_adversarial else ""
-
-            logger.info(f"\n--- Testing at call {self.num_call} (Prompts from {eval_loss_type_str} eval {attack_gen_type_str}, objective: {obj_str} loss) ---")
-            acc_clean = self.test(attack_config=None)
-            self.acc.append(acc_clean.item())
-            self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
-            logger.info(f"Train Accuracy: {self.best_train_accuracy:.4f}")
-            logger.info(f"Test Clean Accuracy: {acc_clean:.4f} (Best Test Clean: {self.best_accuracy:.4f})")
-
-            acc_attacked = torch.tensor(0.0)
-            if self.test_attack_config["enabled"] and self.best_prompt_text is not None:
-                attack_name = self.test_attack_config['attack_type'].upper()
-                acc_attacked = self.test(attack_config=self.test_attack_config)
-                self.acc_attack.append(acc_attacked.item())
-                self.best_accuracy_attack = max(acc_attacked.item(), self.best_accuracy_attack)
-                logger.info(f"{attack_name} Accuracy (Test): {acc_attacked:.4f} (Best {attack_name}: {self.best_accuracy_attack:.4f})")
-            elif self.test_attack_config["enabled"]:
-                 logger.info("Attacked Accuracy (Test): Skipped (no best prompt yet)")
-            elif not self.test_attack_config["enabled"]:
-                 logger.info("Attacked Accuracy (Test): Disabled in config")
-
-
-            output_dir = os.path.join(self.output_dir,self.task_name)
-            adv_train_attack_type_str_fn = f"_advAttackType{self.adv_train_attack_type}" if self.adv_train_config["enabled"] else ""
-            adv_train_attack_prompt_type_str_fn = f"_advPromptGen{self.adv_train_attack_prompt_type}" if self.adv_train_config["enabled"] else ""
-            adv_train_sample_ratio_str_fn = f"_advSampleRatio{self.adv_train_config.get('sample_ratio', 1.0)}" if self.adv_train_config["enabled"] and self.adv_train_config.get('sample_ratio', 1.0) < 1.0 else ""
+        # --- Intermediate Testing Block (conditional) ---
+        if self.test_every_gens is not None and self.test_every_gens > 0:
+            trigger_interval = self.test_every_gens if self.parallel else self.test_every_gens * self.popsize
             
-            initial_prompt_str_fn = f"_initPrompt" if self.initial_prompt_text is not None else ""
-            learned_pos_str_fn = f"_pos{self.learned_prompt_pos}"
-            test_attack_str_fn = f"_testAttack{self.test_attack_config['attack_type']}" if self.test_attack_config['enabled'] else "_testAttackNone"
+            if self.num_call > 0 and (self.num_call % trigger_interval == 0):
+                current_generation = self.num_call if self.parallel else self.num_call // self.popsize
+                
+                # Calculate train accuracy with the current best prompts
+                acc_train_current = self.test_on_train_set()
+                self.train_acc.append(acc_train_current.item())
+                self.best_train_accuracy = acc_train_current.item()
 
-            fname = "{}{}{}_{}_{}_parallel{}_advTrain{}{}{}{}{}_maxLoss{}.pth".format(
-                self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn,
-                self.opt_name, self.backbone.replace("/", "-"),
-                self.parallel,
-                self.adv_train_config["enabled"],
-                adv_train_attack_type_str_fn,
-                adv_train_attack_prompt_type_str_fn,
-                adv_train_sample_ratio_str_fn,
-                test_attack_str_fn,
-                self.maximize_loss
-            )
+                eval_loss_type_str = "adversarial" if is_current_eval_adversarial else "clean"
+                obj_str = "maximize" if self.maximize_loss else "minimize"
+                attack_gen_type_str = f"(AttackType: {self.adv_train_attack_type}, AttackGen: {self.adv_train_attack_prompt_type}"
+                if is_current_eval_adversarial and self.adv_train_config.get('sample_ratio', 1.0) < 1.0:
+                    attack_gen_type_str += f", SampleRatio: {self.adv_train_config.get('sample_ratio', 1.0)}"
+                attack_gen_type_str += ")" if is_current_eval_adversarial else ""
 
+                logger.info(f"\n--- Intermediate Test at Generation ~{current_generation} (Prompts from {eval_loss_type_str} eval {attack_gen_type_str}, obj: {obj_str} loss) ---")
+                acc_clean = self.test(attack_config=None)
+                self.acc.append(acc_clean.item())
+                self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
+                logger.info(f"Train Accuracy: {self.best_train_accuracy:.4f}")
+                logger.info(f"Test Clean Accuracy: {acc_clean:.4f} (Best Test Clean: {self.best_accuracy:.4f})")
 
-            content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
-                       "best_accuracy":self.best_accuracy, "acc":self.acc,
-                       "best_train_accuracy": self.best_train_accuracy, "train_acc": self.train_acc,
-                       "best_accuracy_attack": self.best_accuracy_attack, "acc_attack": self.acc_attack,
-                       "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
-                       "training_dataset_snapshot": self._training_dataset_snapshot,
-                       "historical_losses":self.loss,
-                       "best_objective_loss_value": self.best_objective_loss_value,
-                       "maximize_loss_setting": self.maximize_loss,
-                       "num_call":self.num_call,
-                       "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict(),
-                       "test_attack_config": self.test_attack_config,
-                       "adv_train_config": self.adv_train_config}
-            Analysis_Util.save_results(content,output_dir,fname)
+                acc_attacked = torch.tensor(0.0)
+                if self.test_attack_config["enabled"] and self.best_prompt_text is not None:
+                    attack_name = self.test_attack_config['attack_type'].upper()
+                    acc_attacked = self.test(attack_config=self.test_attack_config)
+                    self.acc_attack.append(acc_attacked.item())
+                    self.best_accuracy_attack = max(acc_attacked.item(), self.best_accuracy_attack)
+                    logger.info(f"{attack_name} Accuracy (Test): {acc_attacked:.4f} (Best {attack_name}: {self.best_accuracy_attack:.4f})")
+                elif self.test_attack_config["enabled"]:
+                    logger.info("Attacked Accuracy (Test): Skipped (no best prompt yet)")
+                elif not self.test_attack_config["enabled"]:
+                    logger.info("Attacked Accuracy (Test): Disabled in config")
+
+                output_dir = os.path.join(self.output_dir,self.task_name)
+                adv_train_attack_type_str_fn = f"_advAttackType{self.adv_train_attack_type}" if self.adv_train_config["enabled"] else ""
+                adv_train_attack_prompt_type_str_fn = f"_advPromptGen{self.adv_train_attack_prompt_type}" if self.adv_train_config["enabled"] else ""
+                adv_train_sample_ratio_str_fn = f"_advSampleRatio{self.adv_train_config.get('sample_ratio', 1.0)}" if self.adv_train_config["enabled"] and self.adv_train_config.get('sample_ratio', 1.0) < 1.0 else ""
+                
+                initial_prompt_str_fn = f"_initPrompt" if self.initial_prompt_text is not None else ""
+                learned_pos_str_fn = f"_pos{self.learned_prompt_pos}"
+                test_attack_str_fn = f"_testAttack{self.test_attack_config['attack_type']}" if self.test_attack_config['enabled'] else "_testAttackNone"
+
+                fname = "{}{}{}_{}_{}_parallel{}_advTrain{}{}{}{}{}_maxLoss{}.pth".format(
+                    self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn,
+                    self.opt_name, self.backbone.replace("/", "-"),
+                    self.parallel,
+                    self.adv_train_config["enabled"],
+                    adv_train_attack_type_str_fn,
+                    adv_train_attack_prompt_type_str_fn,
+                    adv_train_sample_ratio_str_fn,
+                    test_attack_str_fn,
+                    self.maximize_loss
+                )
+
+                content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
+                        "best_accuracy":self.best_accuracy, "acc":self.acc,
+                        "best_train_accuracy": self.best_train_accuracy, "train_acc": self.train_acc,
+                        "best_accuracy_attack": self.best_accuracy_attack, "acc_attack": self.acc_attack,
+                        "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
+                        "training_dataset_snapshot": self._training_dataset_snapshot,
+                        "historical_losses":self.loss,
+                        "best_objective_loss_value": self.best_objective_loss_value,
+                        "maximize_loss_setting": self.maximize_loss,
+                        "num_call":self.num_call,
+                        "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict(),
+                        "test_attack_config": self.test_attack_config,
+                        "adv_train_config": self.adv_train_config}
+                Analysis_Util.save_results(content,output_dir,fname)
 
         if self.parallel:
             return_value = [l * -1 if self.maximize_loss else l for l in loss_values_final]
@@ -894,10 +898,10 @@ class PromptCLIP_Shallow:
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
         elif self.task_name == 'CIFAR10_PGD': # This seems to imply pre-attacked data, be careful
             self.train_data,self.train_loader = load_train_cifar10_pgd(batch_size=self.batch_size,shots=self.k_shot)
-            if self.test_attack_config["enabled"]: # If attack test enabled, use PGD test set
-                self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
-            else: # Else use clean CIFAR10 test set
-                self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
+            # if self.test_attack_config["enabled"]: # If attack test enabled, use PGD test set
+            #     self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
+            # else: # Else use clean CIFAR10 test set
+            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
             self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
             self.n_cls = len(self.classes)
 

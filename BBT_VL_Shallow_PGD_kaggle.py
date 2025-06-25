@@ -26,6 +26,8 @@ parser.add_argument("--parallel", action='store_true', help='Whether to allow pa
 parser.add_argument("--backbone", default="ViT-B/32", type=str)
 parser.add_argument("--k_shot", default=16, type=int, help='How many shot to use')
 parser.add_argument("--adv_train", action='store_true', help='Enable Adversarial Training')
+parser.add_argument("--test_every_n_gens", type=int, default=None, help="Run test evaluation every N generations. If not set, testing only occurs at the very end.")
+
 
 prompt_group = parser.add_argument_group('Initial Prompt Configuration')
 prompt_group.add_argument("--initial_prompt_text", type=str, default=None, help="Initial text prompt (e.g., 'a photo of a'). If None, no initial prompt is used.")
@@ -69,6 +71,7 @@ cfg["maximize_loss"] = args.maximize_loss
 cfg["k_shot"] = args.k_shot
 cfg["initial_prompt_text"] = args.initial_prompt_text
 cfg["learned_prompt_pos"] = args.learned_prompt_pos
+cfg["test_every_n_gens"] = args.test_every_n_gens
 
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
@@ -208,6 +211,12 @@ logger.info(f"Using Backbone: {cfg['backbone']}")
 logger.info(f"Parallel Evaluation during Search: {cfg['parallel']}")
 logger.info(f"Device: {device}")
 logger.info(f"Intrinsic Dimensions: L={intrinsic_dim_L}, V={intrinsic_dim_V}")
+
+if cfg['test_every_n_gens'] is not None:
+    logger.info(f"Intermediate Testing Frequency: Every {cfg['test_every_n_gens']} generations.")
+else:
+    logger.info("Intermediate Testing: Disabled (will only test at the end of the run).")
+
 logger.info(f"Initial Prompt Text: '{cfg['initial_prompt_text']}'")
 logger.info(f"Learned Prompt Position: {cfg['learned_prompt_pos']}")
 logger.info(f"Optimization Objective: {'Maximize' if cfg['maximize_loss'] else 'Minimize'} Loss")
@@ -281,13 +290,18 @@ else:
 
             opt.tell(solutions, fitnesses)
 
+            # Logging of best objective value every N generations (controlled by verbose_frequency in YAML)
+            # This is independent of the testing frequency.
             if prompt_clip.num_call % (cfg["popsize"] * opt_cfg['verbose_frequency']) == 0:
                  log_loss_label = "Maximized Loss" if prompt_clip.maximize_loss else "Minimized Loss"
                  adv_train_info_str = f" (AdvTrain: {prompt_clip.adv_train_config['enabled']}, AttackType: {prompt_clip.adv_train_attack_type}, AttackGen: {prompt_clip.adv_train_attack_prompt_type}"
                  if prompt_clip.adv_train_config['enabled'] and prompt_clip.adv_train_config.get('sample_ratio', 1.0) < 1.0:
                      adv_train_info_str += f", SampleRatio: {prompt_clip.adv_train_config.get('sample_ratio', 1.0)}"
                  adv_train_info_str += ")" if prompt_clip.adv_train_config['enabled'] else ""
-                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}{adv_train_info_str}): {prompt_clip.best_objective_loss_value:.4f}, Best Train Acc: {prompt_clip.best_train_accuracy:.4f}, Best Test Acc: {prompt_clip.best_accuracy:.4f}, Best Attacked Acc: {prompt_clip.best_accuracy_attack:.4f}")
+                 
+                 # The detailed test accuracy log is now inside prompt_clip.eval(), so we only log the objective here
+                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}{adv_train_info_str}): {prompt_clip.best_objective_loss_value:.4f}")
+
     else:
         logger.warning(f"Non-PyPop optimizer path not fully defined for task {args.task_name}")
 
