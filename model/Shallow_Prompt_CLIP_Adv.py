@@ -39,9 +39,6 @@ class PromptCLIP_Shallow:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
         
-        # --- FIX: MOVED THESE ATTRIBUTES UP ---
-        # These are derived from the base model and are needed by the PGD generator,
-        # which is called inside load_dataset().
         self.logit_scale = self.model.logit_scale
         self.dtype = self.model.dtype
         
@@ -51,7 +48,6 @@ class PromptCLIP_Shallow:
         self.train_acc = []
         self._training_dataset_snapshot = None
 
-        # PGD Pre-Attack attributes
         self.use_pgd_pre_attack = cfg.get("use_pgd_pre_attack", False)
         if self.use_pgd_pre_attack:
             self.pgd_epsilon = cfg["pgd_epsilon"]
@@ -67,13 +63,11 @@ class PromptCLIP_Shallow:
         self.best_objective_loss_value = -float('inf') if self.maximize_loss else float('inf')
         logger.info(f"--- Prompt Optimization Mode: {'MAXIMIZE' if self.maximize_loss else 'MINIMIZE'} Loss ---")
         
-        # Text Encoder
         self.n_prompt_tokens_L = cfg["n_prompt_tokens_L"]
         self.intrinsic_dim_L = cfg["intrinsic_dim_L"]
         self.ctx_dim_L = self.model.ln_final.weight.shape[0]
         self.text_encoder = TextEncoder(self.model)
 
-        # Image Encoder
         self.n_prompt_tokens_V = cfg["n_prompt_tokens_V"]
         self.ctx_dim_V = self.model.visual.width
         self.intrinsic_dim_V = cfg["intrinsic_dim_V"]
@@ -82,13 +76,12 @@ class PromptCLIP_Shallow:
 
         self.loss_type = cfg["loss_type"]
         self.init_prompt = None
-        self.imsize = self.image_encoder.input_resolution # This can stay here
+        self.imsize = self.image_encoder.input_resolution
         self.best_prompt_text = None
         self.best_prompt_image = None
         self.best_accuracy = 0.0
         self.best_train_accuracy = 0.0
         self.sigma = cfg["sigma"]
-        # Language Linear Layer
         self.linear_L = torch.nn.Linear(self.intrinsic_dim_L, self.n_prompt_tokens_L * self.ctx_dim_L,
                                       bias=False,device=self.device,dtype=self.dtype)
         embedding = self.model.token_embedding.weight.cpu()
@@ -98,7 +91,6 @@ class PromptCLIP_Shallow:
         std = std_hat / (np.sqrt(self.intrinsic_dim_L) * self.sigma)
         for p in self.linear_L.parameters():
             torch.nn.init.normal_(p, mu, std)
-        # Vision Linear Layer
         self.linear_V = torch.nn.Linear(self.intrinsic_dim_V, self.n_prompt_tokens_V * self.ctx_dim_V,
                                         bias=False, device=self.device, dtype=self.dtype)
         conv = self.model.visual.conv1.weight.cpu()
@@ -111,21 +103,17 @@ class PromptCLIP_Shallow:
 
     def _capture_training_dataset(self):
         logger.info("Capturing the training dataset for saving.")
-        all_images = []
-        all_labels = []
+        all_images, all_labels = [], []
         if not hasattr(self, 'train_loader') or self.train_loader is None:
             logger.warning("train_loader not available. Cannot capture dataset snapshot.")
             return
 
         for batch in self.train_loader:
-            images = batch["image"]
-            labels = batch["label"]
-            all_images.append(images.cpu())
-            all_labels.append(labels.cpu())
+            all_images.append(batch["image"].cpu())
+            all_labels.append(batch["label"].cpu())
 
         if not all_images:
-            self._training_dataset_snapshot = None
-            return
+            self._training_dataset_snapshot = None; return
 
         try:
             images_tensor = torch.cat(all_images, dim=0)
@@ -146,24 +134,33 @@ class PromptCLIP_Shallow:
             self.parallel = False
             clean_images, labels = self.parse_batch(batch)
             self.parallel = original_parallel_flag
+
+            # Ensure clean_images are on the correct device and dtype from the start
+            clean_images = clean_images.to(self.device, dtype=self.dtype)
             
             adv_images = clean_images.clone().detach() + torch.empty_like(clean_images).uniform_(-self.pgd_epsilon, self.pgd_epsilon)
             adv_images = torch.clamp(adv_images, min=0, max=1).detach()
             
             for _ in range(self.pgd_steps):
                 adv_images.requires_grad = True
-                image_features = self.model.encode_image(adv_images)
+                
+                # The image passed to the encoder must be of self.dtype
+                image_features = self.model.encode_image(adv_images.to(self.dtype))
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                
                 logits = self.model.logit_scale.exp() * image_features @ fixed_text_features.t()
+                
                 self.model.zero_grad()
                 loss = F.cross_entropy(logits, labels)
                 loss.backward()
 
                 with torch.no_grad():
                     grad_sign = adv_images.grad.sign()
+                    # --- FIX: Ensure all operations maintain self.dtype ---
                     adv_images = adv_images + self.pgd_alpha * grad_sign
                     eta = torch.clamp(adv_images - clean_images, -self.pgd_epsilon, self.pgd_epsilon)
                     adv_images = torch.clamp(clean_images + eta, min=0, max=1).detach()
+                    adv_images = adv_images.to(self.dtype) # Explicitly cast back after operations
 
             attacked_images_list.append(adv_images.cpu())
             labels_list.append(labels.cpu())
@@ -185,7 +182,6 @@ class PromptCLIP_Shallow:
         
         logger.info(f"Combining clean and attacked data for '{set_name}' set with a {ratio:.2f} attacked ratio.")
 
-        # Extract all data into tensors
         clean_images = torch.cat([b['image'] for b in clean_loader], dim=0)
         clean_labels = torch.cat([b['label'] for b in clean_loader], dim=0)
         attacked_images = torch.cat([b['image'] for b in attacked_loader], dim=0)
@@ -193,30 +189,25 @@ class PromptCLIP_Shallow:
 
         total_size = len(clean_images)
         num_attacked = int(total_size * ratio)
-        num_clean = total_size - num_attacked
-
+        
         indices = torch.randperm(total_size)
         attacked_indices = indices[:num_attacked]
         clean_indices = indices[num_attacked:]
 
-        final_images = torch.zeros_like(clean_images)
-        final_labels = torch.zeros_like(clean_labels)
+        final_images = clean_images.clone() # Start with a copy of clean images
+        final_labels = clean_labels.clone()
         
         if num_attacked > 0:
             final_images[attacked_indices] = attacked_images[attacked_indices]
             final_labels[attacked_indices] = attacked_labels[attacked_indices]
-        if num_clean > 0:
-            final_images[clean_indices] = clean_images[clean_indices]
-            final_labels[clean_indices] = clean_labels[clean_indices]
-
+        
         mixed_dataset = CustomDictTensorDataset(final_images, final_labels)
         mixed_loader = DataLoader(mixed_dataset, batch_size=self.batch_size, shuffle=shuffle_final, num_workers=2, pin_memory=True)
 
-        logger.info(f"Created mixed '{set_name}' set: {num_attacked} attacked samples, {num_clean} clean samples.")
+        logger.info(f"Created mixed '{set_name}' set: {num_attacked} attacked samples, {total_size - num_attacked} clean samples.")
         return mixed_dataset, mixed_loader
 
     def load_dataset(self):
-        # Step 1: Load the clean datasets first
         if self.task_name == 'CIFAR100':
             self.dataset = CIFAR100(self.data_dir, transform=self.preprocess, download=True)
             self.classes = self.dataset.classes
@@ -229,42 +220,39 @@ class PromptCLIP_Shallow:
             self.n_cls = len(self.classes)
             self.train_data, self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
-        # ... (other dataset loading cases would follow the same pattern) ...
         else:
             try:
-                self.train_data, self.train_loader = load_train(batch_size=self.batch_size, shots=self.k_shot, preprocess=self.preprocess, root=self.data_dir, dataset_dir=self.task_name+"_Gen", seed=self.seed)
-                self.test_data, self.test_loader = load_test(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, dataset_dir=self.task_name+"_Gen")
+                # Use a generic loader for other datasets
+                dataset_dir_name = self.task_name.replace("_PGD", "") + "_Gen"
+                self.train_data, self.train_loader = load_train(batch_size=self.batch_size, shots=self.k_shot, preprocess=self.preprocess, root=self.data_dir, dataset_dir=dataset_dir_name, seed=self.seed)
+                self.test_data, self.test_loader = load_test(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, dataset_dir=dataset_dir_name)
                 self.classes = self.train_data.classes
                 self.n_cls = len(self.classes)
             except FileNotFoundError:
-                 logger.error(f"Generic dataset directory not found for task: {self.task_name}_Gen")
+                 logger.error(f"Generic dataset directory not found for task: {dataset_dir_name}")
                  raise
 
-        # Step 2: If PGD is enabled, generate attacked sets and combine them
         if self.use_pgd_pre_attack:
+            original_task_name = self.task_name
             if self.pgd_train_ratio > 0 or self.pgd_test_ratio > 0:
                 logger.info("PGD pre-attack is enabled. Generating and combining datasets...")
-                self.task_name = f"{self.task_name}_PGD"
+                if "_PGD" not in self.task_name:
+                    self.task_name = f"{self.task_name}_PGD"
                 logger.info(f"Task name updated to: {self.task_name}")
 
-                # Process Training Set
                 if self.pgd_train_ratio > 0:
                     attacked_train_data, attacked_train_loader = self._generate_pgd_attacked_set(self.train_loader, "train")
-                    self.train_data, self.train_loader = self._combine_clean_and_attacked_sets(
-                        self.train_loader, attacked_train_loader, self.pgd_train_ratio, "train", shuffle_final=True
-                    )
+                    self.train_data, self.train_loader = self._combine_clean_and_attacked_sets(self.train_loader, attacked_train_loader, self.pgd_train_ratio, "train", shuffle_final=True)
 
-                # Process Test Set
                 if self.pgd_test_ratio > 0:
-                    # Create a non-shuffled loader for test set generation to ensure correspondence
-                    clean_test_loader_no_shuffle = DataLoader(self.test_loader.dataset, batch_size=self.batch_size, shuffle=False, num_workers=2)
+                    clean_test_loader_no_shuffle = DataLoader(self.test_loader.dataset, batch_size=self.batch_size, shuffle=False, num_workers=2, pin_memory=True)
                     attacked_test_data, attacked_test_loader = self._generate_pgd_attacked_set(clean_test_loader_no_shuffle, "test")
-                    self.test_data, self.test_loader = self._combine_clean_and_attacked_sets(
-                        clean_test_loader_no_shuffle, attacked_test_loader, self.pgd_test_ratio, "test", shuffle_final=False
-                    )
+                    self.test_data, self.test_loader = self._combine_clean_and_attacked_sets(clean_test_loader_no_shuffle, attacked_test_loader, self.pgd_test_ratio, "test", shuffle_final=False)
             else:
                 logger.info("PGD pre-attack enabled, but both train and test ratios are 0. Using clean data.")
-
+    
+    # ... The rest of the methods (get_text_information, eval, test, etc.) remain unchanged ...
+    # ... They are omitted here for brevity but are identical to the previous version ...
 
     def get_text_information(self,caption=None):
         prompt_prefix_placeholder = " ".join(["X"] * self.n_prompt_tokens_L)
@@ -459,8 +447,13 @@ class PromptCLIP_Shallow:
 
     def parse_batch(self,batch):
         image, label = batch["image"], batch["label"]
-        image = image.to(device=self.device, dtype=self.dtype if image.dtype != torch.uint8 else torch.float32)
+        image = image.to(device=self.device) # Let the subsequent call handle dtype
+        # image = image.to(device=self.device, dtype=self.dtype if image.dtype != torch.uint8 else torch.float32)
         if image.dtype == torch.uint8: image = image.float() / 255.0
+        
+        # We handle the final dtype conversion inside the functions that use the images
+        # to prevent issues like the one in PGD generation
         label = label.to(device=self.device)
+        
         if self.parallel: image = image.repeat(self.popsize, 1, 1, 1)
         return image, label
