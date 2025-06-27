@@ -188,7 +188,6 @@ opt_cfg = {
 }
 
 opt = None
-print(cfg)
 if args.opt == "shallow_cma":
     opt = shallow_cma(cfg)
     logger.info("Using custom shallow_cma.")
