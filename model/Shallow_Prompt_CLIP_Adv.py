@@ -124,6 +124,7 @@ class PromptCLIP_Shallow:
             logger.error(f"Failed to create training dataset snapshot: {e}")
             self._training_dataset_snapshot = None
 
+
     def _generate_pgd_attacked_set(self, data_loader, set_name):
         logger.info(f"--- Generating PGD attacked dataset for '{set_name}' ---")
         fixed_text_features = self.get_original_text_features().detach()
@@ -138,55 +139,50 @@ class PromptCLIP_Shallow:
             images_orig, labels = self.parse_batch(batch)
             self.parallel = original_parallel_flag
 
-            if not debug_printed: print(f"DEBUG (Start): images_orig.dtype = {images_orig.dtype}, self.dtype = {self.dtype}")
-            
+            # The model expects float16, ensure the original image is in the correct dtype
             images_orig = images_orig.to(self.device, dtype=self.dtype)
             
-            if not debug_printed: print(f"DEBUG (After to_dtype): images_orig.dtype = {images_orig.dtype}")
-
+            # Initialize delta with the same dtype as the image
             delta_img = torch.zeros_like(images_orig, requires_grad=True, device=self.device)
             delta_img.data.uniform_(-self.pgd_epsilon, self.pgd_epsilon)
             delta_img.data = delta_img.data.to(self.dtype)
             delta_img.data = torch.clamp(images_orig + delta_img.data, min=0, max=1) - images_orig
 
-            if not debug_printed: print(f"DEBUG (After delta init): delta_img.dtype = {delta_img.dtype}")
-
             for step in range(self.pgd_steps):
                 delta_img.requires_grad_(True)
                 
+                # Perturbed image should also be explicitly cast to the model's dtype
                 perturbed_image = (images_orig + delta_img).to(self.dtype)
-                if not debug_printed: print(f"DEBUG (Step {step} - Top of loop): perturbed_image.dtype = {perturbed_image.dtype}")
 
                 image_features = self.model.encode_image(perturbed_image)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                
+                # Logit scale is float32, so logits will be float32, which is fine for loss calculation
                 logits = self.model.logit_scale.exp() * image_features @ fixed_text_features.t()
                 loss = F.cross_entropy(logits, labels)
 
+                # The gradient will be float32 for numerical stability
                 delta_img_grad = torch.autograd.grad(loss, delta_img, only_inputs=True)[0]
-                if not debug_printed: print(f"DEBUG (Step {step} - Grads): delta_img_grad.dtype = {delta_img_grad.dtype}")
                 
                 grad_sign = delta_img_grad.sign()
-                if not debug_printed: print(f"DEBUG (Step {step} - Grads): grad_sign.dtype = {grad_sign.dtype}")
                 
-                # --- This is the most likely culprit ---
+                # --- FIX: Cast the gradient-based update back to the model's dtype ---
+                # The 'grad_sign' is float32. To prevent polluting 'delta_img' (float16)
+                # with float32 arithmetic, we cast the update term to the correct dtype.
                 update_term = self.pgd_alpha * grad_sign.to(self.dtype)
-                if not debug_printed: print(f"DEBUG (Step {step} - Update): update_term.dtype = {update_term.dtype}")
 
                 delta_img.data = delta_img.data + update_term
-                if not debug_printed: print(f"DEBUG (Step {step} - After update): delta_img.data.dtype = {delta_img.data.dtype}")
                 
+                # Clamp delta to the epsilon ball and the image to valid [0, 1] range
                 delta_img.data = torch.clamp(delta_img.data, -self.pgd_epsilon, self.pgd_epsilon)
                 delta_img.data = torch.clamp(images_orig + delta_img.data, min=0, max=1) - images_orig
-                if not debug_printed: print(f"DEBUG (Step {step} - After clamp): delta_img.data.dtype = {delta_img.data.dtype}")
             
+            # Detach delta and ensure final image has correct dtype
             final_perturbed_image = (images_orig + delta_img.detach()).to(self.dtype)
             
             attacked_images_list.append(final_perturbed_image.cpu())
             labels_list.append(labels.cpu())
             
-            # --- DEBUG: Stop printing after the first batch ---
-            debug_printed = True
-
         all_attacked_images = torch.cat(attacked_images_list)
         all_labels = torch.cat(labels_list)
         attacked_dataset = CustomDictTensorDataset(all_attacked_images, all_labels)
