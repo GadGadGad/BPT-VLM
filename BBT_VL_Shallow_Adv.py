@@ -6,7 +6,7 @@ from algorithm.CMA_ES import shallow_cma
 from algorithm.LM_CMA_ES import Shallow_LMCMAES
 from algorithm.MMES import Shallow_MMES
 from algorithm.LMMAES import Shallow_LMMAES
-from model.Shallow_Prompt_CLIP_Adv import PromptCLIP_Shallow
+from model.Shallow_Prompt_CLIP_PGD import PromptCLIP_Shallow
 import numpy as np
 import time
 import os
@@ -33,17 +33,6 @@ prompt_group.add_argument("--initial_prompt_text", type=str, default=None, help=
 prompt_group.add_argument("--learned_prompt_pos", type=str, default="prefix", choices=["prefix", "middle", "suffix"], help="Position of the learned prompt relative to the initial prompt and class name.")
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
-
-# --- MODIFIED: PGD Pre-Attack Arguments ---
-pgd_group = parser.add_argument_group('PGD Pre-Attack Configuration')
-pgd_group.add_argument("--use_pgd_pre_attack", action='store_true', help="Generate and use a PGD-attacked dataset for both training and testing.")
-pgd_group.add_argument("--pgd_epsilon", type=float, default=8/255, help="PGD epsilon value (e.g., 8/255). Overrides config.")
-pgd_group.add_argument("--pgd_alpha", type=float, default=4/255, help="PGD alpha (step size) value (e.g., 2/255). Overrides config.")
-pgd_group.add_argument("--pgd_steps", type=int, default=10, help="Number of PGD steps. Overrides config.")
-pgd_group.add_argument("--pgd_train_ratio", type=float, default=1.0, help="Ratio of PGD-attacked images in the training set (0.0 to 1.0). Default is 1.0 (all attacked).")
-pgd_group.add_argument("--pgd_test_ratio", type=float, default=1.0, help="Ratio of PGD-attacked images in the test set (0.0 to 1.0). Default is 1.0 (all attacked).")
-
-
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
@@ -64,20 +53,13 @@ cfg["initial_prompt_text"] = args.initial_prompt_text
 cfg["learned_prompt_pos"] = args.learned_prompt_pos
 cfg["test_every_n_gens"] = args.test_every_n_gens
 
-# --- MODIFIED: Update config with PGD args ---
-cfg["use_pgd_pre_attack"] = args.use_pgd_pre_attack
-if args.pgd_epsilon is not None: cfg["pgd_epsilon"] = args.pgd_epsilon
-if args.pgd_alpha is not None: cfg["pgd_alpha"] = args.pgd_alpha
-if args.pgd_steps is not None: cfg["pgd_steps"] = args.pgd_steps
-cfg["pgd_train_ratio"] = args.pgd_train_ratio
-cfg["pgd_test_ratio"] = args.pgd_test_ratio
-
-
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
         cfg[k]=v
 else:
     logging.warning(f"Task '{args.task_name}' not found in config. Using default settings.")
+
+# White-box attack configurations removed
 
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir)
@@ -85,10 +67,9 @@ Analysis_Util.mkdir_if_missing(output_dir)
 
 initial_prompt_str_fn = f"_initPrompt" if cfg["initial_prompt_text"] is not None else ""
 learned_pos_str_fn = f"_pos{cfg['learned_prompt_pos']}"
-pgd_str_fn = "_PGD" if cfg["use_pgd_pre_attack"] and (cfg["pgd_train_ratio"] > 0 or cfg["pgd_test_ratio"] > 0) else ""
 
 
-fname_base = "{}{}_{}_{}_parallel{}{}{}{}_maxLoss{}".format(
+fname_base = "{}{}_{}_{}_parallel{}{}_maxLoss{}".format(
     cfg["k_shot"],
     args.task_name,
     cfg["opt_name"],
@@ -96,7 +77,6 @@ fname_base = "{}{}_{}_{}_parallel{}{}{}{}_maxLoss{}".format(
     args.parallel,
     initial_prompt_str_fn,
     learned_pos_str_fn,
-    pgd_str_fn,
     cfg["maximize_loss"]
 )
 log_filename = fname_base + ".log"
@@ -176,7 +156,7 @@ else:
     logger.error(f"Unsupported optimizer: {args.opt}")
     raise ValueError(f"Unsupported optimizer: {args.opt}")
 
-logger.info(f"Task: {prompt_clip.task_name}")
+logger.info(f"Task: {args.task_name}")
 logger.info(f"Optimizer: {args.opt}")
 logger.info(f'Population Size: {cfg["popsize"]}')
 logger.info(f"Using Backbone: {cfg['backbone']}")
@@ -193,16 +173,6 @@ logger.info(f"Initial Prompt Text: '{cfg['initial_prompt_text']}'")
 logger.info(f"Learned Prompt Position: {cfg['learned_prompt_pos']}")
 logger.info(f"Optimization Objective: {'Maximize' if cfg['maximize_loss'] else 'Minimize'} Loss")
 logger.info(f"Budget: {opt_cfg['budget']}")
-# --- MODIFIED: Log PGD info ---
-if cfg["use_pgd_pre_attack"]:
-    logger.info(f"PGD Pre-Attack: ENABLED")
-    logger.info(f"  - Epsilon: {cfg['pgd_epsilon']:.4f}")
-    logger.info(f"  - Alpha:   {cfg['pgd_alpha']:.4f}")
-    logger.info(f"  - Steps:   {cfg['pgd_steps']}")
-    logger.info(f"  - PGD Train Ratio: {cfg['pgd_train_ratio']:.2f}")
-    logger.info(f"  - PGD Test Ratio:  {cfg['pgd_test_ratio']:.2f}")
-else:
-    logger.info(f"PGD Pre-Attack: DISABLED")
 logger.info(f"Adversarial Training (during optimization): False")
 logger.info(f"Attack during Final Test: False")
 
@@ -252,8 +222,12 @@ else:
 
             opt.tell(solutions, fitnesses)
 
+            # Logging of best objective value every N generations (controlled by verbose_frequency in YAML)
+            # This is independent of the testing frequency.
             if prompt_clip.num_call % (cfg["popsize"] * opt_cfg['verbose_frequency']) == 0:
                  log_loss_label = "Maximized Loss" if prompt_clip.maximize_loss else "Minimized Loss"
+                 
+                 # The detailed test accuracy log is now inside prompt_clip.eval(), so we only log the objective here
                  logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}): {prompt_clip.best_objective_loss_value:.4f}")
 
     else:
@@ -266,13 +240,15 @@ logger.info(f"Total Optimization Time: {optimization_time:.2f} seconds")
 
 logger.info("\n--- Final Evaluation using Best Prompts ---")
 final_acc_clean = prompt_clip.test()
-logger.info(f"Final Clean Accuracy on (potentially mixed) Test Set: {final_acc_clean:.4f}")
+logger.info(f"Final Clean Accuracy: {final_acc_clean:.4f}")
+
+# Final attacked accuracy evaluation removed
 
 pth_filename = fname_base + "_final.pth"
 final_results_path = os.path.join(output_dir, pth_filename)
 
 content = {
-    "task_name": prompt_clip.task_name, "opt_name": cfg["opt_name"], "backbone": cfg["backbone"],
+    "task_name": args.task_name, "opt_name": cfg["opt_name"], "backbone": cfg["backbone"],
     "k_shot": cfg["k_shot"],
     "best_accuracy": prompt_clip.best_accuracy, "acc": prompt_clip.acc,
     "best_train_accuracy": prompt_clip.best_train_accuracy, "train_acc": prompt_clip.train_acc,
