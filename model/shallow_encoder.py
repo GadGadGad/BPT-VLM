@@ -131,7 +131,7 @@ class VisionEncoder(nn.Module):
         self.batch_size = context["batch_size"] # original batch size
         self.parallel = context["parallel"]
         self.pop_size = context["pop_size"]
-
+        print('called')
 
     def incorporate_prompt(self,prompt,embedding):
         if prompt is None:
