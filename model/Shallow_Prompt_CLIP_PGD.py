@@ -898,10 +898,10 @@ class PromptCLIP_Shallow:
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
         elif self.task_name == 'CIFAR10_PGD': # This seems to imply pre-attacked data, be careful
             self.train_data,self.train_loader = load_train_cifar10_pgd(batch_size=self.batch_size,shots=self.k_shot)
-            # if self.test_attack_config["enabled"]: # If attack test enabled, use PGD test set
-            #     self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
-            # else: # Else use clean CIFAR10 test set
-            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
+            if self.test_attack_config["enabled"]: # If attack test enabled, use PGD test set
+                self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
+            else: # Else use clean CIFAR10 test set
+                self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
             self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
             self.n_cls = len(self.classes)
 
