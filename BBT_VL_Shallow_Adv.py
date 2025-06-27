@@ -152,13 +152,13 @@ opt_cfg = {
     'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))),
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
-    'n_individuals': cfg["popsize"],
+    'popsize': cfg["popsize"],
 }
 
 opt = None
 print(cfg)
 if args.opt == "shallow_cma":
-    opt = shallow_cma(cfg)
+    opt = shallow_cma(opt_cfg)
     logger.info("Using custom shallow_cma.")
 elif args.opt == "shallow_lmcmaes":
     opt = Shallow_LMCMAES(pro, opt_cfg)
