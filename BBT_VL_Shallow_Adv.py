@@ -154,7 +154,8 @@ opt_cfg = {
     'verbose_frequency': cfg.get('verbose_frequency', 5),
     'n_individuals': cfg["popsize"],
 }
-cfg['budget'] = cfg.get('budget', 25200),
+cfg['budget'] = cfg.get('budget', 25200)
+
 opt = None
 
 if args.opt == "shallow_cma":
