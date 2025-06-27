@@ -147,19 +147,18 @@ pro = {'fitness_function': fitness_eval, 'ndim_problem': ndim_problem}
 
 opt_cfg = {
     'fitness_threshold': 1e-10,
-    'seed': cfg.get('seed', 0),
+    'seed_rng': cfg.get('seed', 0),
     'budget': cfg.get('budget', 25200),
     'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))),
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
-    'popsize': cfg["popsize"],
-    'intrinsic_dim_V': cfg['intrinsic_dim_V'],
-    'intrinsic_dim_L': cfg['intrinsic_dim_L']
+    'n_individuals': cfg["popsize"],
 }
-
+cfg['budget'] = cfg.get('budget', 25200),
 opt = None
+
 if args.opt == "shallow_cma":
-    opt = shallow_cma(opt_cfg)
+    opt = shallow_cma(cfg)
     logger.info("Using custom shallow_cma.")
 elif args.opt == "shallow_lmcmaes":
     opt = Shallow_LMCMAES(pro, opt_cfg)
