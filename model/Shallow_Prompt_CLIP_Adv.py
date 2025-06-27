@@ -38,13 +38,20 @@ class PromptCLIP_Shallow:
         self.num_call = 0
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
+        
+        # --- FIX: MOVED THESE ATTRIBUTES UP ---
+        # These are derived from the base model and are needed by the PGD generator,
+        # which is called inside load_dataset().
+        self.logit_scale = self.model.logit_scale
+        self.dtype = self.model.dtype
+        
         self.loss = []
         self.acc = []
         self.acc_attack = []
         self.train_acc = []
         self._training_dataset_snapshot = None
 
-        # --- MODIFIED: PGD Pre-Attack attributes ---
+        # PGD Pre-Attack attributes
         self.use_pgd_pre_attack = cfg.get("use_pgd_pre_attack", False)
         if self.use_pgd_pre_attack:
             self.pgd_epsilon = cfg["pgd_epsilon"]
@@ -75,9 +82,7 @@ class PromptCLIP_Shallow:
 
         self.loss_type = cfg["loss_type"]
         self.init_prompt = None
-        self.imsize = self.image_encoder.input_resolution
-        self.logit_scale = self.model.logit_scale
-        self.dtype = self.model.dtype
+        self.imsize = self.image_encoder.input_resolution # This can stay here
         self.best_prompt_text = None
         self.best_prompt_image = None
         self.best_accuracy = 0.0
@@ -226,10 +231,14 @@ class PromptCLIP_Shallow:
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
         # ... (other dataset loading cases would follow the same pattern) ...
         else:
-            self.train_data, self.train_loader = load_train(batch_size=self.batch_size, shots=self.k_shot, preprocess=self.preprocess, root=self.data_dir, dataset_dir=self.task_name+"_Gen")
-            self.test_data, self.test_loader = load_test(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, dataset_dir=self.task_name+"_Gen")
-            self.classes = self.train_data.classes
-            self.n_cls = len(self.classes)
+            try:
+                self.train_data, self.train_loader = load_train(batch_size=self.batch_size, shots=self.k_shot, preprocess=self.preprocess, root=self.data_dir, dataset_dir=self.task_name+"_Gen", seed=self.seed)
+                self.test_data, self.test_loader = load_test(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, dataset_dir=self.task_name+"_Gen")
+                self.classes = self.train_data.classes
+                self.n_cls = len(self.classes)
+            except FileNotFoundError:
+                 logger.error(f"Generic dataset directory not found for task: {self.task_name}_Gen")
+                 raise
 
         # Step 2: If PGD is enabled, generate attacked sets and combine them
         if self.use_pgd_pre_attack:
@@ -247,8 +256,8 @@ class PromptCLIP_Shallow:
 
                 # Process Test Set
                 if self.pgd_test_ratio > 0:
-                    # Create a non-shuffled loader for test set generation if it doesn't exist
-                    clean_test_loader_no_shuffle = DataLoader(self.test_loader.dataset, batch_size=self.batch_size, shuffle=False)
+                    # Create a non-shuffled loader for test set generation to ensure correspondence
+                    clean_test_loader_no_shuffle = DataLoader(self.test_loader.dataset, batch_size=self.batch_size, shuffle=False, num_workers=2)
                     attacked_test_data, attacked_test_loader = self._generate_pgd_attacked_set(clean_test_loader_no_shuffle, "test")
                     self.test_data, self.test_loader = self._combine_clean_and_attacked_sets(
                         clean_test_loader_no_shuffle, attacked_test_loader, self.pgd_test_ratio, "test", shuffle_final=False
@@ -257,9 +266,6 @@ class PromptCLIP_Shallow:
                 logger.info("PGD pre-attack enabled, but both train and test ratios are 0. Using clean data.")
 
 
-    # --- The rest of the methods (eval, test, etc.) do not need changes ---
-    # They are included here for completeness of the file.
-    
     def get_text_information(self,caption=None):
         prompt_prefix_placeholder = " ".join(["X"] * self.n_prompt_tokens_L)
 
@@ -392,11 +398,11 @@ class PromptCLIP_Shallow:
         loss_values = [x / len(self.train_data) for x in loss_accumulator] if self.parallel else loss_accumulator / len(self.train_data)
         self.loss.append(loss_values if self.parallel else [loss_values])
         
-        epoch_best_loss = max(loss_values) if self.maximize_loss else min(loss_values)
-        if (self.maximize_loss and epoch_best_loss > self.best_objective_loss_value) or \
-           (not self.maximize_loss and epoch_best_loss < self.best_objective_loss_value):
-            self.best_objective_loss_value = epoch_best_loss
-            best_idx = loss_values.index(epoch_best_loss) if self.parallel else 0
+        epoch_best_loss_in_pop = max(loss_values) if self.maximize_loss else min(loss_values)
+        if (self.maximize_loss and epoch_best_loss_in_pop > self.best_objective_loss_value) or \
+           (not self.maximize_loss and epoch_best_loss_in_pop < self.best_objective_loss_value):
+            self.best_objective_loss_value = epoch_best_loss_in_pop
+            best_idx = loss_values.index(epoch_best_loss_in_pop) if self.parallel else 0
             self.best_prompt_text = (prompt_text[best_idx] if self.parallel else prompt_text).detach().clone()
             self.best_prompt_image = (prompt_image[best_idx] if self.parallel else prompt_image).detach().clone()
             logger.info(f"*** New best {'maximized' if self.maximize_loss else 'minimized'} loss: {self.best_objective_loss_value:.4f} (call {self.num_call}) ***")
@@ -418,8 +424,7 @@ class PromptCLIP_Shallow:
         self.acc.append(acc_test)
         self.best_accuracy = max(acc_test, self.best_accuracy)
         logger.info(f"Train Accuracy: {acc_train:.4f} | Test Accuracy: {acc_test:.4f} (Best Test: {self.best_accuracy:.4f})")
-        # Save intermediate results
-        # (Saving logic is simplified here but would mirror the one in the original code)
+        # Saving intermediate results would go here, similar to original code
 
     @torch.no_grad()
     def test_on_train_set(self):
@@ -433,7 +438,10 @@ class PromptCLIP_Shallow:
 
     def _perform_test(self, data_loader):
         correct, total = 0., 0.
+        original_parallel_text = self.text_encoder.parallel
+        original_parallel_image = self.image_encoder.parallel
         self.text_encoder.parallel = self.image_encoder.parallel = False
+
         text_features = self.text_encoder(self.best_prompt_text)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         
@@ -445,6 +453,8 @@ class PromptCLIP_Shallow:
             logits = self.logit_scale.exp() * image_features @ text_features.t()
             correct += (logits.argmax(dim=-1) == label).float().sum()
         
+        self.text_encoder.parallel = original_parallel_text
+        self.image_encoder.parallel = original_parallel_image
         return correct / total
 
     def parse_batch(self,batch):
