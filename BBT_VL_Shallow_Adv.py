@@ -37,9 +37,9 @@ parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts t
 # --- MODIFIED: PGD Pre-Attack Arguments ---
 pgd_group = parser.add_argument_group('PGD Pre-Attack Configuration')
 pgd_group.add_argument("--use_pgd_pre_attack", action='store_true', help="Generate and use a PGD-attacked dataset for both training and testing.")
-pgd_group.add_argument("--pgd_epsilon", type=float, default=None, help="PGD epsilon value (e.g., 8/255). Overrides config.")
-pgd_group.add_argument("--pgd_alpha", type=float, default=None, help="PGD alpha (step size) value (e.g., 2/255). Overrides config.")
-pgd_group.add_argument("--pgd_steps", type=int, default=None, help="Number of PGD steps. Overrides config.")
+pgd_group.add_argument("--pgd_epsilon", type=float, default=8/255, help="PGD epsilon value (e.g., 8/255). Overrides config.")
+pgd_group.add_argument("--pgd_alpha", type=float, default=4/255, help="PGD alpha (step size) value (e.g., 2/255). Overrides config.")
+pgd_group.add_argument("--pgd_steps", type=int, default=10, help="Number of PGD steps. Overrides config.")
 pgd_group.add_argument("--pgd_train_ratio", type=float, default=1.0, help="Ratio of PGD-attacked images in the training set (0.0 to 1.0). Default is 1.0 (all attacked).")
 pgd_group.add_argument("--pgd_test_ratio", type=float, default=1.0, help="Ratio of PGD-attacked images in the test set (0.0 to 1.0). Default is 1.0 (all attacked).")
 
