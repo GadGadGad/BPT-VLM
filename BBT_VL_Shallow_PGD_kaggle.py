@@ -179,7 +179,7 @@ pro = {'fitness_function': fitness_eval, 'ndim_problem': ndim_problem}
 
 opt_cfg = {
     'fitness_threshold': 1e-10,
-    'seed_rng': cfg.get('seed', 0),
+    'seed': cfg.get('seed', 0),
     'budget': cfg.get('budget', 25200),
     'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))),
     'sigma': cfg['sigma'],
