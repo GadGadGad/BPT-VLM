@@ -127,11 +127,16 @@ class PromptCLIP_Shallow:
 
 # In class PromptCLIP_Shallow:
 
+ # In class PromptCLIP_Shallow:
+
     def _generate_pgd_attacked_set(self, data_loader, set_name):
         logger.info(f"--- Generating PGD attacked dataset for '{set_name}' ---")
         # Text features are needed for the loss. They are float16 as expected by the model.
         fixed_text_features = self.get_original_text_features().detach()
         attacked_images_list, labels_list = [], []
+
+        # --- DEBUG: Flag to only print for the first batch ---
+        debug_printed = False
 
         for batch in tqdm(data_loader, desc=f"Attacking {set_name} set"):
             original_parallel_flag = self.parallel
@@ -141,49 +146,71 @@ class PromptCLIP_Shallow:
             images_orig_f32 = images_orig_f32.to(self.device)
             self.parallel = original_parallel_flag
 
-            # --- Robust PGD in float32 ---
             # Keep the original image and the delta in float32 for numerical stability of updates.
             delta_img_f32 = torch.zeros_like(images_orig_f32, requires_grad=True)
             delta_img_f32.data.uniform_(-self.pgd_epsilon, self.pgd_epsilon)
-
-            # Initial clamp to ensure the starting point is valid
             delta_img_f32.data = torch.clamp(images_orig_f32 + delta_img_f32.data, min=0, max=1) - images_orig_f32
+
+            if not debug_printed:
+                print("\n\n--- PGD DEBUG START (First Batch Only) ---")
+                print(f"Model dtype (self.dtype): {self.dtype}")
+                print(f"Initial images_orig_f32.dtype: {images_orig_f32.dtype}")
+                print(f"Initial delta_img_f32.dtype: {delta_img_f32.dtype}")
+                print(f"fixed_text_features.dtype: {fixed_text_features.dtype}")
+
 
             for step in range(self.pgd_steps):
                 delta_img_f32.requires_grad_(True)
                 
-                # Create perturbed image. It's still float32 here.
                 perturbed_image_f32 = images_orig_f32 + delta_img_f32
                 
                 # --- CRITICAL: Cast to model's dtype ONLY for the forward pass ---
-                # The model expects float16 (self.dtype), so we cast it at the last moment.
-                # The gradient will correctly flow back to the float32 `delta_img_f32`.
-                image_features = self.model.encode_image(perturbed_image_f32.to(self.dtype))
+                image_for_model = perturbed_image_f32.to(self.dtype)
                 
-                # Normalize features for cosine similarity calculation
+                if not debug_printed:
+                    print(f"\n--- PGD Step {step} ---")
+                    print(f"  [Input]  perturbed_image_f32.dtype: {perturbed_image_f32.dtype}")
+                    print(f"  [Input]  image_for_model.dtype (to encode_image): {image_for_model.dtype}")
+                
+                # The model forward pass that is failing
+                image_features = self.model.encode_image(image_for_model)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                 
-                # Logits are calculated in float32 (due to logit_scale)
                 logits = self.model.logit_scale.exp() * image_features @ fixed_text_features.t()
                 loss = F.cross_entropy(logits, labels)
 
-                # Gradient is computed w.r.t. the float32 delta, resulting in a stable float32 grad.
+                # Gradient calculation
                 delta_img_grad = torch.autograd.grad(loss, delta_img_f32, only_inputs=True)[0]
                 
-                # Update is done entirely in float32.
+                if not debug_printed:
+                    print(f"  [Output] image_features.dtype: {image_features.dtype}")
+                    print(f"  [Output] logits.dtype: {logits.dtype}")
+                    print(f"  [Output] loss.dtype: {loss.dtype}")
+                    print(f"  [Grad]   delta_img_grad.dtype: {delta_img_grad.dtype}")
+                
+                # Update delta in float32
                 grad_sign = delta_img_grad.sign()
                 delta_img_f32.data = delta_img_f32.data + self.pgd_alpha * grad_sign
                 
-                # Clamp the delta to the epsilon-ball
+                if not debug_printed:
+                    print(f"  [Update] delta_img_f32.data.dtype (after update): {delta_img_f32.data.dtype}")
+
+                # Clamp delta and image, all in float32
                 delta_img_f32.data = torch.clamp(delta_img_f32.data, -self.pgd_epsilon, self.pgd_epsilon)
-                # Clamp the resulting image to the valid [0, 1] range
                 delta_img_f32.data = torch.clamp(images_orig_f32 + delta_img_f32.data, min=0, max=1) - images_orig_f32
+
+                if not debug_printed:
+                    print(f"  [Update] delta_img_f32.data.dtype (after clamp): {delta_img_f32.data.dtype}")
             
-            # Final perturbed image, detached from graph. It remains float32 for the dataset.
+            # Final perturbed image, detached from graph.
             final_perturbed_image = (images_orig_f32 + delta_img_f32.detach())
             
             attacked_images_list.append(final_perturbed_image.cpu())
             labels_list.append(labels.cpu())
+
+            if not debug_printed:
+                print("--- PGD DEBUG END ---\n\n")
+                debug_printed = True
             
         all_attacked_images = torch.cat(attacked_images_list)
         all_labels = torch.cat(labels_list)
@@ -191,7 +218,6 @@ class PromptCLIP_Shallow:
         attacked_loader = DataLoader(attacked_dataset, batch_size=self.batch_size, shuffle=True, num_workers=2, pin_memory=True)
         logger.info(f"--- PGD attack for '{set_name}' complete. {len(attacked_dataset)} samples generated. ---")
         return attacked_dataset, attacked_loader
-
     # ... The rest of the file is unchanged ...
     def _combine_clean_and_attacked_sets(self, clean_loader, attacked_loader, ratio, set_name, shuffle_final=True):
         if ratio <= 0.0:
