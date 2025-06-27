@@ -6,7 +6,7 @@ import clip
 from torchvision.datasets import CIFAR100, CIFAR10
 from dataset.cifar100 import load_train_cifar100, load_test_cifar100
 from dataset.cifar10 import load_train_cifar10, load_test_cifar10
-from model.shallow_encoder import TextEncoder,VisionEncoder
+from model.shallow_encoder_adv import TextEncoder,VisionEncoder
 from model.analysis_utils import Analysis_Util
 from dataset.general import load_train,load_test
 from tqdm import tqdm
