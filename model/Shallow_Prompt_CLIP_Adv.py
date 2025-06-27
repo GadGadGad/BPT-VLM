@@ -25,6 +25,7 @@ class PromptCLIP_Shallow:
         self.batch_size = cfg["batch_size"]
         self.k_shot = cfg["k_shot"]
         self.seed = cfg["seed"]
+        self.cfg = cfg # Store cfg for PGD params
         self.initial_prompt_text = cfg.get("initial_prompt_text", None)
         self.learned_prompt_pos = cfg.get("learned_prompt_pos", "prefix")
         self.test_every_gens = cfg.get("test_every_n_gens", None) # <-- NEW
@@ -97,6 +98,44 @@ class PromptCLIP_Shallow:
         logger.info('[Conv] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
         for p in self.linear_V.parameters():
             torch.nn.init.normal_(p, mu, std)
+
+    @torch.enable_grad()
+    def _perform_pgd_attack(self, images, labels, eps, alpha, steps):
+        """ Performs PGD attack on a batch of images. """
+        images_orig = images.clone().detach()
+        images_adv = images.clone().detach().requires_grad_(True)
+        
+        # Use standard "a photo of a..." prompts for a consistent attack baseline
+        vanilla_text_features = self.get_original_text_features()
+
+        for _ in range(steps):
+            # We don't need prompts for the image encoder here, attacking the base model
+            # Temporarily disable parallel mode for the encoder during attack generation
+            original_parallel = self.image_encoder.parallel
+            self.image_encoder.parallel = False
+            image_features = self.image_encoder(images_adv, prompt=None)
+            self.image_encoder.parallel = original_parallel
+            
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            
+            logits = self.logit_scale.exp() * image_features @ vanilla_text_features.t()
+            
+            loss = F.cross_entropy(logits, labels)
+            
+            # Maximize loss by gradient ascent
+            self.model.zero_grad()
+            loss.backward()
+            
+            with torch.no_grad():
+                grad = images_adv.grad.sign()
+                images_adv.data = images_adv.data + alpha * grad
+                # Project back to eps-ball
+                delta = torch.clamp(images_adv.data - images_orig, min=-eps, max=eps)
+                images_adv.data = torch.clamp(images_orig + delta, min=0, max=1)
+            
+            images_adv.grad.zero_()
+        
+        return images_adv.detach()
 
     def _capture_training_dataset(self):
         """
@@ -488,6 +527,21 @@ class PromptCLIP_Shallow:
 
 
     def load_dataset(self):
+        # --- NEW: Set up attack config if enabled ---
+        attack_config = None
+        if self.cfg.get("use_attacked_dataset", False):
+            attack_config = {
+                "model": self,
+                "ratio": self.cfg.get("attack_ratio", 0.5),
+                "eps": self.cfg.get("pgd_eps", 8/255.0),
+                "alpha": self.cfg.get("pgd_alpha", 2/255.0),
+                "steps": self.cfg.get("pgd_steps", 10),
+            }
+        
+        train_attack_cfg = attack_config if self.cfg.get("attack_train") else None
+        test_attack_cfg = attack_config if self.cfg.get("attack_test") else None
+        # --- END NEW ---
+
         if self.task_name == 'CIFAR100':
             self.dataset = CIFAR100(self.data_dir, transform=self.preprocess, download=True)
             self.classes = self.dataset.classes
@@ -498,69 +552,69 @@ class PromptCLIP_Shallow:
             self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=True)
             self.classes = self.dataset.classes
             self.n_cls = len(self.classes)
-            self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
-            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
+            self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed, attack_config=train_attack_cfg)
+            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=test_attack_cfg)
         elif self.task_name == 'StanfordCars':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="Cars_Gen")
+                                                           root=self.data_dir,dataset_dir="Cars_Gen", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="Cars_Gen")
+                                                           root=self.data_dir,dataset_dir="Cars_Gen", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
         elif self.task_name == 'OxfordPets':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="OxfordPets_Gen")
+                                                           root=self.data_dir,dataset_dir="OxfordPets_Gen", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="OxfordPets_Gen")
+                                                           root=self.data_dir,dataset_dir="OxfordPets_Gen", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
         elif self.task_name == 'UCF-101':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="UCF-101_Gen")
+                                                           root=self.data_dir,dataset_dir="UCF-101_Gen", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="UCF-101_Gen")
+                                                           root=self.data_dir,dataset_dir="UCF-101_Gen", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
         elif self.task_name == 'DTD':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="DTD_Gen")
+                                                           root=self.data_dir,dataset_dir="DTD_Gen", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="DTD_Gen")
+                                                           root=self.data_dir,dataset_dir="DTD_Gen", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
         elif self.task_name == 'EuroSAT':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="EuroSAT_Gen")
+                                                           root=self.data_dir,dataset_dir="EuroSAT_Gen", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="EuroSAT_Gen")
+                                                           root=self.data_dir,dataset_dir="EuroSAT_Gen", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
         elif self.task_name == 'Food101':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="Food101_Gen")
+                                                           root=self.data_dir,dataset_dir="Food101_Gen", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="Food101_Gen")
+                                                           root=self.data_dir,dataset_dir="Food101_Gen", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
         elif self.task_name == 'caltech101':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="caltech101_Gen")
+                                                           root=self.data_dir,dataset_dir="caltech101_Gen", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="caltech101_Gen")
+                                                           root=self.data_dir,dataset_dir="caltech101_Gen", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
         elif self.task_name == 'SUN397':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="SUN397_Gen")
+                                                           root=self.data_dir,dataset_dir="SUN397_Gen", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="SUN397_Gen")
+                                                           root=self.data_dir,dataset_dir="SUN397_Gen", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
         elif self.task_name == 'ImageNet':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,seed=self.seed,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="imagenet")
+                                                           root=self.data_dir,dataset_dir="imagenet", attack_config=train_attack_cfg)
             self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="imagenet")
+                                                           root=self.data_dir,dataset_dir="imagenet", attack_config=test_attack_cfg)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
 

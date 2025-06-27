@@ -6,7 +6,8 @@ from algorithm.CMA_ES import shallow_cma
 from algorithm.LM_CMA_ES import Shallow_LMCMAES
 from algorithm.MMES import Shallow_MMES
 from algorithm.LMMAES import Shallow_LMMAES
-from model.Shallow_Prompt_CLIP_PGD import PromptCLIP_Shallow
+# Modified import to point to the correct file
+from model.Shallow_Prompt_CLIP_Adv import PromptCLIP_Shallow
 import numpy as np
 import time
 import os
@@ -33,6 +34,19 @@ prompt_group.add_argument("--initial_prompt_text", type=str, default=None, help=
 prompt_group.add_argument("--learned_prompt_pos", type=str, default="prefix", choices=["prefix", "middle", "suffix"], help="Position of the learned prompt relative to the initial prompt and class name.")
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
+
+# --- NEW: PGD Attacked Dataset Generation Arguments ---
+attack_group = parser.add_argument_group('PGD Attacked Dataset Configuration')
+attack_group.add_argument("--use_attacked_dataset", action='store_true', help="Enable generation/use of a PGD-attacked dataset.")
+attack_group.add_argument("--attack_ratio", type=float, default=0.5, help="Ratio of images to attack in the dataset.")
+attack_group.add_argument("--attack_train", action='store_true', help="Apply attack to the training set.")
+attack_group.add_argument("--attack_test", action='store_true', help="Apply attack to the test set.")
+attack_group.add_argument("--pgd_eps", type=float, default=8/255.0, help="PGD attack epsilon.")
+attack_group.add_argument("--pgd_alpha", type=float, default=2/255.0, help="PGD attack alpha (step size).")
+attack_group.add_argument("--pgd_steps", type=int, default=10, help="Number of PGD attack steps.")
+# --- END NEW ---
+
+
 args = parser.parse_args()
 assert "shallow" in args.opt, "Only shallow prompt tuning is supported in this file."
 
@@ -52,6 +66,16 @@ cfg["k_shot"] = args.k_shot
 cfg["initial_prompt_text"] = args.initial_prompt_text
 cfg["learned_prompt_pos"] = args.learned_prompt_pos
 cfg["test_every_n_gens"] = args.test_every_n_gens
+
+# --- NEW: Add PGD args to config dict ---
+cfg["use_attacked_dataset"] = args.use_attacked_dataset
+cfg["attack_ratio"] = args.attack_ratio
+cfg["attack_train"] = args.attack_train
+cfg["attack_test"] = args.attack_test
+cfg["pgd_eps"] = args.pgd_eps
+cfg["pgd_alpha"] = args.pgd_alpha
+cfg["pgd_steps"] = args.pgd_steps
+# --- END NEW ---
 
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
@@ -175,6 +199,11 @@ logger.info(f"Optimization Objective: {'Maximize' if cfg['maximize_loss'] else '
 logger.info(f"Budget: {opt_cfg['budget']}")
 logger.info(f"Adversarial Training (during optimization): False")
 logger.info(f"Attack during Final Test: False")
+if args.use_attacked_dataset:
+    logger.info("--- Using Pre-Attacked PGD Dataset for Tuning/Testing ---")
+    logger.info(f"Attack on TRAIN set: {args.attack_train}")
+    logger.info(f"Attack on TEST set: {args.attack_test}")
+    logger.info(f"Attack Ratio: {args.attack_ratio}, Epsilon: {args.pgd_eps}, Alpha: {args.pgd_alpha}, Steps: {args.pgd_steps}")
 
 
 start_time = time.time()
