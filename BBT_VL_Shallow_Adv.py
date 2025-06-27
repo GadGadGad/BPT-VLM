@@ -6,7 +6,7 @@ from algorithm.CMA_ES import shallow_cma
 from algorithm.LM_CMA_ES import Shallow_LMCMAES
 from algorithm.MMES import Shallow_MMES
 from algorithm.LMMAES import Shallow_LMMAES
-from model.Shallow_Prompt_CLIP_Adv import PromptCLIP_Shallow
+from model.Shallow_Prompt_CLIP_PGD import PromptCLIP_Shallow
 import numpy as np
 import time
 import os
@@ -33,10 +33,13 @@ prompt_group.add_argument("--learned_prompt_pos", type=str, default="prefix", ch
 
 pgd_gen_group = parser.add_argument_group('Pre-Attack Dataset Generation Parameters')
 pgd_gen_group.add_argument('--enable_pre_attack_gen', action='store_true',
-                           help='Enable dynamic generation of a pre-attacked dataset. Task name must end with "_PGD_GEN" (e.g., "CIFAR100_PGD_GEN").')
+                           help='Enable dynamic generation of a pre-attacked dataset. Task name must end with "_PGD_GEN".')
 pgd_gen_group.add_argument('--pre_attack_gen_epsilon', type=float, default=8/255, help='Epsilon for pre-attack generation.')
 pgd_gen_group.add_argument('--pre_attack_gen_alpha', type=float, default=2/255, help='Alpha for pre-attack generation.')
 pgd_gen_group.add_argument('--pre_attack_gen_num_iter', type=int, default=10, help='Number of iterations for pre-attack generation.')
+pgd_gen_group.add_argument('--pre_attack_gen_ratio', type=float, default=1.0,
+                           help='Ratio of the dataset to be pre-attacked (0.0 to 1.0). 1.0 means fully attacked, 0.0 is fully clean. Used with --enable_pre_attack_gen.')
+
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
 args = parser.parse_args()
@@ -71,13 +74,15 @@ cfg['pre_attack_gen']['enabled'] = args.enable_pre_attack_gen
 cfg['pre_attack_gen']['epsilon'] = args.pre_attack_gen_epsilon
 cfg['pre_attack_gen']['alpha'] = args.pre_attack_gen_alpha
 cfg['pre_attack_gen']['num_iter'] = args.pre_attack_gen_num_iter
+cfg['pre_attack_gen']['ratio'] = args.pre_attack_gen_ratio
 
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir)
 
 initial_prompt_str_fn = f"_initPrompt" if cfg["initial_prompt_text"] is not None else ""
 learned_pos_str_fn = f"_pos{cfg['learned_prompt_pos']}"
-pre_attack_gen_str_fn = "_preAttackGen" if cfg['pre_attack_gen']['enabled'] else ""
+pre_attack_gen_ratio_str_fn = f"_ratio{cfg['pre_attack_gen']['ratio']}" if cfg['pre_attack_gen']['enabled'] and cfg['pre_attack_gen']['ratio'] < 1.0 else ""
+pre_attack_gen_str_fn = f"_preAttackGen{pre_attack_gen_ratio_str_fn}" if cfg['pre_attack_gen']['enabled'] else ""
 
 fname_base = "{}{}_{}_{}_parallel{}{}{}_maxLoss{}".format(
     cfg["k_shot"],
@@ -189,7 +194,8 @@ if cfg['pre_attack_gen']['enabled']:
     gen_eps = cfg['pre_attack_gen'].get('epsilon')
     gen_alpha = cfg['pre_attack_gen'].get('alpha')
     gen_iter = cfg['pre_attack_gen'].get('num_iter')
-    logger.info(f"Pre-Attacked Dataset Generation: ENABLED")
+    gen_ratio = cfg['pre_attack_gen'].get('ratio')
+    logger.info(f"Pre-Attacked Dataset Generation: ENABLED (Ratio: {gen_ratio*100:.0f}% Attacked)")
     logger.info(f"  Generation Params: Epsilon={gen_eps}, Alpha={gen_alpha}, Iter={gen_iter}")
 else:
     logger.info(f"Using Clean Dataset (Pre-Attack Generation is DISABLED)")
@@ -198,13 +204,9 @@ else:
 start_time = time.time()
 logger.info("--- Starting Optimization Loop ---")
 
+# The prompt_clip object is now fully initialized, so no more set_context calls are needed.
 if args.opt in __pypop__:
     if args.task_name in __classification__ or args.task_name.endswith("_PGD_GEN"):
-        logger.info("Setting up text and image context for PyPop optimizer.")
-        text_context = prompt_clip.get_text_information()
-        image_context = prompt_clip.get_image_information()
-        prompt_clip.text_encoder.set_context(text_context)
-        prompt_clip.image_encoder.set_context(image_context)
         res = opt.optimize()
         logger.info(f"Optimization Result (PyPop): {res}")
     else:
@@ -212,12 +214,6 @@ if args.opt in __pypop__:
 
 else:
     if args.task_name in __classification__ or args.task_name.endswith("_PGD_GEN"):
-        logger.info("Setting up text and image context for non-PyPop optimizer.")
-        text_context = prompt_clip.get_text_information()
-        image_context = prompt_clip.get_image_information()
-        prompt_clip.text_encoder.set_context(text_context)
-        prompt_clip.image_encoder.set_context(image_context)
-
         while not opt.stop():
             solutions = opt.ask()
 
@@ -243,7 +239,7 @@ else:
             # Logging of best objective value every N generations (controlled by verbose_frequency in YAML)
             if prompt_clip.num_call % (cfg["popsize"] * opt_cfg['verbose_frequency']) == 0:
                  log_loss_label = "Maximized Loss" if prompt_clip.maximize_loss else "Minimized Loss"
-                 dataset_type_str = " (Pre-Attacked Dataset)" if prompt_clip.pre_attack_gen_config['enabled'] else " (Clean Dataset)"
+                 dataset_type_str = f" ({(prompt_clip.pre_attack_gen_config.get('ratio', 0)*100):.0f}% Attacked Dataset)" if prompt_clip.pre_attack_gen_config['enabled'] else " (Clean Dataset)"
                  logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}{dataset_type_str}): {prompt_clip.best_objective_loss_value:.4f}")
 
     else:
@@ -256,7 +252,7 @@ logger.info(f"Total Optimization Time: {optimization_time:.2f} seconds")
 
 logger.info("\n--- Final Evaluation using Best Prompts ---")
 final_accuracy = prompt_clip.test()
-dataset_type_str = "Pre-Attacked" if prompt_clip.pre_attack_gen_config['enabled'] else "Clean"
+dataset_type_str = f"{(prompt_clip.pre_attack_gen_config.get('ratio', 0)*100):.0f}% Attacked" if prompt_clip.pre_attack_gen_config['enabled'] else "Clean"
 logger.info(f"Final Accuracy on {dataset_type_str} Test Set: {final_accuracy:.4f}")
 
 pth_filename = fname_base + "_final.pth"
