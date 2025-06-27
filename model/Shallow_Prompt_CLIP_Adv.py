@@ -1,3 +1,5 @@
+--- START OF FILE Shallow_Prompt_CLIP_Adv.py ---
+
 import os
 import torch
 from torch.nn import functional as F
@@ -128,56 +130,58 @@ class PromptCLIP_Shallow:
         logger.info(f"--- Generating PGD attacked dataset for '{set_name}' ---")
         fixed_text_features = self.get_original_text_features().detach()
         attacked_images_list, labels_list = [], []
-        
+
         for batch in tqdm(data_loader, desc=f"Attacking {set_name} set"):
             original_parallel_flag = self.parallel
             self.parallel = False
-            # parse_batch handles device transfer but not final dtype.
-            clean_images, labels = self.parse_batch(batch) 
+            images_orig, labels = self.parse_batch(batch)
             self.parallel = original_parallel_flag
 
-            # --- DEFINITIVE FIX BLOCK ---
-            # 1. Ensure clean_images has the correct dtype from the start.
-            clean_images = clean_images.to(self.dtype)
+            # Ensure original images are on the correct device and dtype
+            images_orig = images_orig.to(self.device, dtype=self.dtype)
             
-            # 2. Initialize adv_images with the correct dtype.
-            adv_images = clean_images.clone().detach() + \
-                         torch.empty_like(clean_images).uniform_(-self.pgd_epsilon, self.pgd_epsilon).to(self.dtype)
-            adv_images = torch.clamp(adv_images, min=0, max=1)
+            # --- Robust PGD implementation inspired by the user's example ---
             
+            # Initialize the perturbation delta, not the image itself
+            delta_img = torch.zeros_like(images_orig, requires_grad=True, device=self.device)
+            # Add random start to the delta
+            delta_img.data.uniform_(-self.pgd_epsilon, self.pgd_epsilon)
+            delta_img.data = delta_img.data.to(self.dtype)
+            # Clamp the initial delta to ensure the image+delta is valid
+            delta_img.data = torch.clamp(images_orig + delta_img.data, min=0, max=1) - images_orig
+
             for _ in range(self.pgd_steps):
-                adv_images.requires_grad = True
+                # Always start with a fresh requires_grad
+                delta_img.requires_grad_(True)
                 
-                # The image is already in self.dtype, no conversion needed here.
-                image_features = self.model.encode_image(adv_images)
+                # Create the perturbed image for this iteration
+                perturbed_image = (images_orig + delta_img).to(self.dtype)
+
+                # --- Forward pass using base CLIP model ---
+                image_features = self.model.encode_image(perturbed_image)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                
                 logits = self.model.logit_scale.exp() * image_features @ fixed_text_features.t()
-                
-                self.model.zero_grad()
                 loss = F.cross_entropy(logits, labels)
-                # Use a scaler for loss.backward() in mixed precision to prevent underflow
-                if self.dtype == torch.float16:
-                    # A simple static scaler is often sufficient for PGD
-                    (loss * 256.0).backward()
-                else:
-                    loss.backward()
 
-                with torch.no_grad():
-                    # 3. Explicitly cast the gradient sign to the correct dtype before arithmetic.
-                    grad_sign = adv_images.grad.sign().to(self.dtype)
-                    
-                    # Now all tensors in this operation are self.dtype.
-                    adv_images = adv_images + self.pgd_alpha * grad_sign
-                    
-                    # Projection step also respects dtype.
-                    eta = torch.clamp(adv_images - clean_images, -self.pgd_epsilon, self.pgd_epsilon)
-                    adv_images = torch.clamp(clean_images + eta, min=0, max=1).detach()
-            # --- END OF FIX BLOCK ---
+                # --- Backward pass ---
+                delta_img_grad = torch.autograd.grad(loss, delta_img, only_inputs=True)[0]
 
-            attacked_images_list.append(adv_images.cpu())
-            labels_list.append(labels.cpu())
+                # --- Update Step for the delta ---
+                grad_sign = delta_img_grad.sign()
+                delta_img.data = delta_img.data + self.pgd_alpha * grad_sign.to(self.dtype)
+                
+                # Project delta back into the L-inf ball
+                delta_img.data = torch.clamp(delta_img.data, -self.pgd_epsilon, self.pgd_epsilon)
+                
+                # Project the full image back to the valid [0, 1] range and update delta
+                delta_img.data = torch.clamp(images_orig + delta_img.data, min=0, max=1) - images_orig
             
+            # Detach and finalize the perturbed image
+            final_perturbed_image = (images_orig + delta_img.detach()).to(self.dtype)
+            
+            attacked_images_list.append(final_perturbed_image.cpu())
+            labels_list.append(labels.cpu())
+
         all_attacked_images = torch.cat(attacked_images_list)
         all_labels = torch.cat(labels_list)
         attacked_dataset = CustomDictTensorDataset(all_attacked_images, all_labels)
@@ -220,7 +224,6 @@ class PromptCLIP_Shallow:
         return mixed_dataset, mixed_loader
 
     def load_dataset(self):
-        # Determine the base task name before it's modified
         base_task_name = self.task_name.replace("_PGD", "")
         
         if base_task_name in ['CIFAR100', 'CIFAR10']:
