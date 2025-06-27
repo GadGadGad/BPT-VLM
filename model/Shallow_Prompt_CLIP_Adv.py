@@ -38,19 +38,7 @@ class PromptCLIP_Shallow:
         self.train_acc = []
         self._training_dataset_snapshot = None # Holder for the dataset
 
-        self.load_dataset()
-        self._capture_training_dataset() # Capture the dataset for saving
-
-        self.maximize_loss = cfg.get("maximize_loss", False)
-        self.best_objective_loss_value = None
-        if self.maximize_loss:
-            self.best_objective_loss_value = -float('inf')
-            logger.info(f"--- Prompt Optimization Mode: MAXIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
-        else:
-            self.best_objective_loss_value = float('inf')
-            logger.info(f"--- Prompt Optimization Mode: MINIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
-
-        logger.info("--- Standard (Clean) Prompt Optimization ---")
+        # --- REORDERED: Initialize all model-dependent components BEFORE dataset loading ---
         
         # Text Encoder
         self.n_prompt_tokens_L = cfg["n_prompt_tokens_L"]
@@ -65,17 +53,14 @@ class PromptCLIP_Shallow:
         self.image_encoder = VisionEncoder(self.model)
         self.image_encoder.n_prompt_tokens_V = self.n_prompt_tokens_V
 
+        # Other Model-related attributes
         self.loss_type = cfg["loss_type"]
         self.init_prompt = None
         self.imsize = self.image_encoder.input_resolution
         self.logit_scale = self.model.logit_scale
-        self.dtype = self.model.dtype
-        self.best_prompt_text = None
-        self.best_prompt_image = None
-        self.best_accuracy = 0.0
-        self.best_accuracy_attack = 0.0 # Kept for consistency, but will not be populated
-        self.best_train_accuracy = 0.0
+        self.dtype = self.model.dtype # FIX: Defined before load_dataset
         self.sigma = cfg["sigma"]
+        
         # Language Linear Layer
         self.linear_L = torch.nn.Linear(self.intrinsic_dim_L, self.n_prompt_tokens_L * self.ctx_dim_L,
                                       bias=False,device=self.device,dtype=self.dtype)
@@ -98,6 +83,30 @@ class PromptCLIP_Shallow:
         logger.info('[Conv] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
         for p in self.linear_V.parameters():
             torch.nn.init.normal_(p, mu, std)
+
+        # --- END OF REORDERED BLOCK ---
+        
+        # Now, it is safe to load the dataset, as it has access to all required model components.
+        self.load_dataset()
+        self._capture_training_dataset() # Capture the dataset for saving
+
+        # Final setup after model and data are ready
+        self.maximize_loss = cfg.get("maximize_loss", False)
+        self.best_objective_loss_value = None
+        if self.maximize_loss:
+            self.best_objective_loss_value = -float('inf')
+            logger.info(f"--- Prompt Optimization Mode: MAXIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
+        else:
+            self.best_objective_loss_value = float('inf')
+            logger.info(f"--- Prompt Optimization Mode: MINIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
+
+        logger.info("--- Standard (Clean) Prompt Optimization ---")
+        
+        self.best_prompt_text = None
+        self.best_prompt_image = None
+        self.best_accuracy = 0.0
+        self.best_accuracy_attack = 0.0 # Kept for consistency, but will not be populated
+        self.best_train_accuracy = 0.0
 
     @torch.enable_grad()
     def _perform_pgd_attack(self, images, labels, eps, alpha, steps):
@@ -549,6 +558,7 @@ class PromptCLIP_Shallow:
             self.train_data,self.train_loader = load_train_cifar100(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
             self.test_data, self.test_loader = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess)
         elif self.task_name == 'CIFAR10':
+            # Need to get classes before calling the loader that might generate attacks
             self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=True)
             self.classes = self.dataset.classes
             self.n_cls = len(self.classes)
