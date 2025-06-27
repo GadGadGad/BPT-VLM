@@ -128,6 +128,9 @@ class PromptCLIP_Shallow:
         logger.info(f"--- Generating PGD attacked dataset for '{set_name}' ---")
         fixed_text_features = self.get_original_text_features().detach()
         attacked_images_list, labels_list = [], []
+        
+        # --- DEBUG: Add a flag to only print for the first batch ---
+        debug_printed = False
 
         for batch in tqdm(data_loader, desc=f"Attacking {set_name} set"):
             original_parallel_flag = self.parallel
@@ -135,50 +138,54 @@ class PromptCLIP_Shallow:
             images_orig, labels = self.parse_batch(batch)
             self.parallel = original_parallel_flag
 
-            # Ensure original images are on the correct device and dtype
+            if not debug_printed: print(f"DEBUG (Start): images_orig.dtype = {images_orig.dtype}, self.dtype = {self.dtype}")
+            
             images_orig = images_orig.to(self.device, dtype=self.dtype)
             
-            # --- Robust PGD implementation inspired by the user's example ---
-            
-            # Initialize the perturbation delta, not the image itself
+            if not debug_printed: print(f"DEBUG (After to_dtype): images_orig.dtype = {images_orig.dtype}")
+
             delta_img = torch.zeros_like(images_orig, requires_grad=True, device=self.device)
-            # Add random start to the delta
             delta_img.data.uniform_(-self.pgd_epsilon, self.pgd_epsilon)
             delta_img.data = delta_img.data.to(self.dtype)
-            # Clamp the initial delta to ensure the image+delta is valid
             delta_img.data = torch.clamp(images_orig + delta_img.data, min=0, max=1) - images_orig
 
-            for _ in range(self.pgd_steps):
-                # Always start with a fresh requires_grad
+            if not debug_printed: print(f"DEBUG (After delta init): delta_img.dtype = {delta_img.dtype}")
+
+            for step in range(self.pgd_steps):
                 delta_img.requires_grad_(True)
                 
-                # Create the perturbed image for this iteration
                 perturbed_image = (images_orig + delta_img).to(self.dtype)
+                if not debug_printed: print(f"DEBUG (Step {step} - Top of loop): perturbed_image.dtype = {perturbed_image.dtype}")
 
-                # --- Forward pass using base CLIP model ---
                 image_features = self.model.encode_image(perturbed_image)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                 logits = self.model.logit_scale.exp() * image_features @ fixed_text_features.t()
                 loss = F.cross_entropy(logits, labels)
 
-                # --- Backward pass ---
                 delta_img_grad = torch.autograd.grad(loss, delta_img, only_inputs=True)[0]
-
-                # --- Update Step for the delta ---
+                if not debug_printed: print(f"DEBUG (Step {step} - Grads): delta_img_grad.dtype = {delta_img_grad.dtype}")
+                
                 grad_sign = delta_img_grad.sign()
-                delta_img.data = delta_img.data + self.pgd_alpha * grad_sign.to(self.dtype)
+                if not debug_printed: print(f"DEBUG (Step {step} - Grads): grad_sign.dtype = {grad_sign.dtype}")
                 
-                # Project delta back into the L-inf ball
+                # --- This is the most likely culprit ---
+                update_term = self.pgd_alpha * grad_sign.to(self.dtype)
+                if not debug_printed: print(f"DEBUG (Step {step} - Update): update_term.dtype = {update_term.dtype}")
+
+                delta_img.data = delta_img.data + update_term
+                if not debug_printed: print(f"DEBUG (Step {step} - After update): delta_img.data.dtype = {delta_img.data.dtype}")
+                
                 delta_img.data = torch.clamp(delta_img.data, -self.pgd_epsilon, self.pgd_epsilon)
-                
-                # Project the full image back to the valid [0, 1] range and update delta
                 delta_img.data = torch.clamp(images_orig + delta_img.data, min=0, max=1) - images_orig
+                if not debug_printed: print(f"DEBUG (Step {step} - After clamp): delta_img.data.dtype = {delta_img.data.dtype}")
             
-            # Detach and finalize the perturbed image
             final_perturbed_image = (images_orig + delta_img.detach()).to(self.dtype)
             
             attacked_images_list.append(final_perturbed_image.cpu())
             labels_list.append(labels.cpu())
+            
+            # --- DEBUG: Stop printing after the first batch ---
+            debug_printed = True
 
         all_attacked_images = torch.cat(attacked_images_list)
         all_labels = torch.cat(labels_list)
@@ -187,6 +194,7 @@ class PromptCLIP_Shallow:
         logger.info(f"--- PGD attack for '{set_name}' complete. {len(attacked_dataset)} samples generated. ---")
         return attacked_dataset, attacked_loader
 
+    # ... The rest of the file is unchanged ...
     def _combine_clean_and_attacked_sets(self, clean_loader, attacked_loader, ratio, set_name, shuffle_final=True):
         if ratio <= 0.0:
             logger.info(f"Using 100% clean data for '{set_name}' set.")
