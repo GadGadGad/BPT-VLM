@@ -189,7 +189,7 @@ opt_cfg = {
 
 opt = None
 if args.opt == "shallow_cma":
-    opt = shallow_cma(cfg)
+    opt = shallow_cma(opt_cfg)
     logger.info("Using custom shallow_cma.")
 elif args.opt == "shallow_lmcmaes":
     opt = Shallow_LMCMAES(pro, opt_cfg)
