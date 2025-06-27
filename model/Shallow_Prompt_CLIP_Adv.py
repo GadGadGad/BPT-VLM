@@ -132,35 +132,48 @@ class PromptCLIP_Shallow:
         for batch in tqdm(data_loader, desc=f"Attacking {set_name} set"):
             original_parallel_flag = self.parallel
             self.parallel = False
-            clean_images, labels = self.parse_batch(batch)
+            # parse_batch handles device transfer but not final dtype.
+            clean_images, labels = self.parse_batch(batch) 
             self.parallel = original_parallel_flag
 
-            # Ensure clean_images are on the correct device and dtype from the start
-            clean_images = clean_images.to(self.device, dtype=self.dtype)
+            # --- DEFINITIVE FIX BLOCK ---
+            # 1. Ensure clean_images has the correct dtype from the start.
+            clean_images = clean_images.to(self.dtype)
             
-            adv_images = clean_images.clone().detach() + torch.empty_like(clean_images).uniform_(-self.pgd_epsilon, self.pgd_epsilon)
-            adv_images = torch.clamp(adv_images, min=0, max=1).detach()
+            # 2. Initialize adv_images with the correct dtype.
+            adv_images = clean_images.clone().detach() + \
+                         torch.empty_like(clean_images).uniform_(-self.pgd_epsilon, self.pgd_epsilon).to(self.dtype)
+            adv_images = torch.clamp(adv_images, min=0, max=1)
             
             for _ in range(self.pgd_steps):
                 adv_images.requires_grad = True
                 
-                # The image passed to the encoder must be of self.dtype
-                image_features = self.model.encode_image(adv_images.to(self.dtype))
+                # The image is already in self.dtype, no conversion needed here.
+                image_features = self.model.encode_image(adv_images)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                 
                 logits = self.model.logit_scale.exp() * image_features @ fixed_text_features.t()
                 
                 self.model.zero_grad()
                 loss = F.cross_entropy(logits, labels)
-                loss.backward()
+                # Use a scaler for loss.backward() in mixed precision to prevent underflow
+                if self.dtype == torch.float16:
+                    # A simple static scaler is often sufficient for PGD
+                    (loss * 256.0).backward()
+                else:
+                    loss.backward()
 
                 with torch.no_grad():
-                    grad_sign = adv_images.grad.sign()
-                    # --- FIX: Ensure all operations maintain self.dtype ---
+                    # 3. Explicitly cast the gradient sign to the correct dtype before arithmetic.
+                    grad_sign = adv_images.grad.sign().to(self.dtype)
+                    
+                    # Now all tensors in this operation are self.dtype.
                     adv_images = adv_images + self.pgd_alpha * grad_sign
+                    
+                    # Projection step also respects dtype.
                     eta = torch.clamp(adv_images - clean_images, -self.pgd_epsilon, self.pgd_epsilon)
                     adv_images = torch.clamp(clean_images + eta, min=0, max=1).detach()
-                    adv_images = adv_images.to(self.dtype) # Explicitly cast back after operations
+            # --- END OF FIX BLOCK ---
 
             attacked_images_list.append(adv_images.cpu())
             labels_list.append(labels.cpu())
@@ -192,9 +205,8 @@ class PromptCLIP_Shallow:
         
         indices = torch.randperm(total_size)
         attacked_indices = indices[:num_attacked]
-        clean_indices = indices[num_attacked:]
-
-        final_images = clean_images.clone() # Start with a copy of clean images
+        
+        final_images = clean_images.clone()
         final_labels = clean_labels.clone()
         
         if num_attacked > 0:
@@ -208,22 +220,23 @@ class PromptCLIP_Shallow:
         return mixed_dataset, mixed_loader
 
     def load_dataset(self):
-        if self.task_name == 'CIFAR100':
-            self.dataset = CIFAR100(self.data_dir, transform=self.preprocess, download=True)
+        # Determine the base task name before it's modified
+        base_task_name = self.task_name.replace("_PGD", "")
+        
+        if base_task_name in ['CIFAR100', 'CIFAR10']:
+            if base_task_name == 'CIFAR100':
+                self.dataset = CIFAR100(self.data_dir, transform=self.preprocess, download=True)
+                self.train_data, self.train_loader = load_train_cifar100(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
+                self.test_data, self.test_loader = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess)
+            elif base_task_name == 'CIFAR10':
+                self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=True)
+                self.train_data, self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
+                self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
             self.classes = self.dataset.classes
             self.n_cls = len(self.classes)
-            self.train_data, self.train_loader = load_train_cifar100(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
-            self.test_data, self.test_loader = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess)
-        elif self.task_name == 'CIFAR10':
-            self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=True)
-            self.classes = self.dataset.classes
-            self.n_cls = len(self.classes)
-            self.train_data, self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
-            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
         else:
             try:
-                # Use a generic loader for other datasets
-                dataset_dir_name = self.task_name.replace("_PGD", "") + "_Gen"
+                dataset_dir_name = base_task_name + "_Gen"
                 self.train_data, self.train_loader = load_train(batch_size=self.batch_size, shots=self.k_shot, preprocess=self.preprocess, root=self.data_dir, dataset_dir=dataset_dir_name, seed=self.seed)
                 self.test_data, self.test_loader = load_test(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, dataset_dir=dataset_dir_name)
                 self.classes = self.train_data.classes
@@ -233,7 +246,6 @@ class PromptCLIP_Shallow:
                  raise
 
         if self.use_pgd_pre_attack:
-            original_task_name = self.task_name
             if self.pgd_train_ratio > 0 or self.pgd_test_ratio > 0:
                 logger.info("PGD pre-attack is enabled. Generating and combining datasets...")
                 if "_PGD" not in self.task_name:
@@ -251,9 +263,6 @@ class PromptCLIP_Shallow:
             else:
                 logger.info("PGD pre-attack enabled, but both train and test ratios are 0. Using clean data.")
     
-    # ... The rest of the methods (get_text_information, eval, test, etc.) remain unchanged ...
-    # ... They are omitted here for brevity but are identical to the previous version ...
-
     def get_text_information(self,caption=None):
         prompt_prefix_placeholder = " ".join(["X"] * self.n_prompt_tokens_L)
 
@@ -412,7 +421,6 @@ class PromptCLIP_Shallow:
         self.acc.append(acc_test)
         self.best_accuracy = max(acc_test, self.best_accuracy)
         logger.info(f"Train Accuracy: {acc_train:.4f} | Test Accuracy: {acc_test:.4f} (Best Test: {self.best_accuracy:.4f})")
-        # Saving intermediate results would go here, similar to original code
 
     @torch.no_grad()
     def test_on_train_set(self):
@@ -447,12 +455,9 @@ class PromptCLIP_Shallow:
 
     def parse_batch(self,batch):
         image, label = batch["image"], batch["label"]
-        image = image.to(device=self.device) # Let the subsequent call handle dtype
-        # image = image.to(device=self.device, dtype=self.dtype if image.dtype != torch.uint8 else torch.float32)
+        image = image.to(device=self.device)
         if image.dtype == torch.uint8: image = image.float() / 255.0
         
-        # We handle the final dtype conversion inside the functions that use the images
-        # to prevent issues like the one in PGD generation
         label = label.to(device=self.device)
         
         if self.parallel: image = image.repeat(self.popsize, 1, 1, 1)
