@@ -153,6 +153,8 @@ opt_cfg = {
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
     'popsize': cfg["popsize"],
+    'intrinsic_dim_V': cfg['intrinsic_dim_V'],
+    'intrinsic_dim_L': cfg['intrinsic_dim_L']
 }
 
 opt = None
