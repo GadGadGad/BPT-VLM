@@ -122,7 +122,10 @@ class PromptCLIP_Shallow:
             # Temporarily disable parallel mode for the encoder during attack generation
             original_parallel = self.image_encoder.parallel
             self.image_encoder.parallel = False
-            image_features = self.image_encoder(images_adv, prompt=None)
+
+            # --- FIX: Cast input tensor to the model's dtype before passing to the encoder ---
+            image_features = self.image_encoder(images_adv.to(self.dtype), prompt=None)
+            
             self.image_encoder.parallel = original_parallel
             
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
