@@ -3,6 +3,8 @@ import torch
 from torch.nn import functional as F
 import numpy as np
 import clip
+import random
+from collections import defaultdict
 from torchvision.datasets import CIFAR100, CIFAR10
 from dataset.cifar100 import load_train_cifar100, load_test_cifar100
 from dataset.cifar10 import load_train_cifar10, load_test_cifar10
@@ -16,16 +18,65 @@ logger= logging.getLogger(__name__)
 
 # Helper class for the dynamically generated pre-attacked dataset
 class PreAttackedDictDataset(torch.utils.data.Dataset):
-    def __init__(self, tensors, classes):
-        assert tensors[0].size(0) == tensors[1].size(0)
-        self.tensors = tensors
+    def __init__(self, items, classes):
+        self.items = items # List of dictionaries {"image": tensor, "label": tensor}
         self.classes = classes
 
     def __getitem__(self, index):
-        return {"image": self.tensors[0][index], "label": self.tensors[1][index]}
+        return self.items[index]
 
     def __len__(self):
-        return self.tensors[0].size(0)
+        return len(self.items)
+
+# Helper class to combine clean and attacked data based on a ratio
+class CombinedDataset(torch.utils.data.Dataset):
+    def __init__(self, clean_dataset, attacked_dataset, ratio):
+        self.clean_dataset = clean_dataset
+        self.attacked_dataset = attacked_dataset
+        self.ratio = ratio
+        self.classes = clean_dataset.classes
+        
+        logger.info(f"Building combined dataset with {ratio*100:.0f}% attacked data (per-class)...")
+        self.combined_items = self._build_combined_data()
+        logger.info(f"Combined dataset created with {len(self.combined_items)} total samples.")
+
+    def _build_combined_data(self):
+        clean_by_class = defaultdict(list)
+        attacked_by_class = defaultdict(list)
+
+        for i in range(len(self.clean_dataset)):
+            item = self.clean_dataset[i]
+            clean_by_class[item['label'].item()].append(item)
+        
+        for i in range(len(self.attacked_dataset)):
+            item = self.attacked_dataset[i]
+            attacked_by_class[item['label'].item()].append(item)
+
+        final_items = []
+        for label in sorted(clean_by_class.keys()):
+            clean_samples = clean_by_class[label]
+            attacked_samples = attacked_by_class[label]
+            
+            num_in_class = len(clean_samples)
+            num_attacked = round(num_in_class * self.ratio)
+            num_clean = num_in_class - num_attacked
+
+            # To ensure we get a random subset, shuffle before picking
+            random.shuffle(clean_samples)
+            random.shuffle(attacked_samples)
+
+            final_items.extend(attacked_samples[:num_attacked])
+            final_items.extend(clean_samples[:num_clean])
+
+        random.shuffle(final_items) # Shuffle the final list to mix classes
+        return final_items
+
+    def __getitem__(self, index):
+        return self.combined_items[index]
+
+    def __len__(self):
+        return len(self.combined_items)
+
 
 class PromptCLIP_Shallow:
     def __init__(self,task_name,cfg):
@@ -119,9 +170,10 @@ class PromptCLIP_Shallow:
             logger.info(f"--- Prompt Optimization Mode: MINIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
 
         if self.pre_attack_gen_config.get("enabled", False):
-            logger.info("--- Pre-attacked Dataset Generation was ENABLED ---")
+            ratio = self.pre_attack_gen_config.get('ratio', 1.0)
+            logger.info(f"--- Pre-attacked Dataset Generation was ENABLED ({ratio*100:.0f}% Attacked) ---")
             logger.info(f"  Generation Params: Epsilon={self.pre_attack_gen_config['epsilon']}, Alpha={self.pre_attack_gen_config['alpha']}, Iter={self.pre_attack_gen_config['num_iter']}")
-            logger.info("--- On-the-fly adversarial attacks are DISABLED. Using the pre-attacked dataset for all evaluations. ---")
+            logger.info("--- On-the-fly adversarial attacks are DISABLED. Using the pre-generated dataset for all evaluations. ---")
         else:
             logger.info("--- Standard (Clean) Prompt Optimization ---")
 
@@ -143,12 +195,12 @@ class PromptCLIP_Shallow:
         original_parallel_flag = self.parallel
         self.parallel = False
         
-        for batch in self.train_loader:
-            # We don't use self.parse_batch here to get the raw, un-repeated data
-            images = batch["image"] # These should be preprocessed tensors
-            labels = batch["label"]
-            all_images.append(images.cpu()) # Move to CPU for storage
-            all_labels.append(labels.cpu())
+        # Use the underlying dataset to avoid dataloader shuffling issues
+        dataset_to_capture = self.train_loader.dataset
+        for i in range(len(dataset_to_capture)):
+            item = dataset_to_capture[i]
+            all_images.append(item["image"].cpu().unsqueeze(0))
+            all_labels.append(item["label"].cpu().unsqueeze(0))
 
         self.parallel = original_parallel_flag # Restore original flag
 
@@ -183,24 +235,19 @@ class PromptCLIP_Shallow:
                 
                 # Build the prompt string based on the learned prompt's position
                 if self.learned_prompt_pos == "prefix":
-                    # [Learned] [Initial] [Class]
                     template = f"{prompt_prefix_placeholder} {initial_prompt} {name}."
                 elif self.learned_prompt_pos == "middle":
-                    # [Initial] [Learned] [Class]
                     template = f"{initial_prompt} {prompt_prefix_placeholder} {name}."
                 elif self.learned_prompt_pos == "suffix":
-                    # [Initial] [Class] [Learned]
                     template = f"{initial_prompt} {name} {prompt_prefix_placeholder}."
                 else: # Default to prefix
                     template = f"{prompt_prefix_placeholder} {initial_prompt} {name}."
 
-                # Clean up extra spaces that might result from an empty initial_prompt
                 pattern_prompts.append(" ".join(template.split()))
 
             tokenized_pattern_prompts = torch.cat([clip.tokenize(p) for p in pattern_prompts]).to(self.device)
             
-            # Find the start index of the context tokens (the "X"s)
-            x_token_id = clip.tokenize("X")[0, 1].item() # The token id for a single "X"
+            x_token_id = clip.tokenize("X")[0, 1].item()
             ctx_start_idx = (tokenized_pattern_prompts == x_token_id).nonzero(as_tuple=True)[1].min().item()
 
             with torch.no_grad():
@@ -211,15 +258,15 @@ class PromptCLIP_Shallow:
                 "n_prompt_tokens_L": self.n_prompt_tokens_L,
                 "init_pattern_embedding": init_pattern_embedding, 
                 "tokenized_pattern_prompts": tokenized_pattern_prompts,
-                "ctx_start_idx": ctx_start_idx,  # Pass the start index to the encoder
+                "ctx_start_idx": ctx_start_idx,
                 "batch_size": self.batch_size,
                 "pop_size": self.popsize,
                 "parallel": self.parallel
             }
-        else: # Logic for a single caption (e.g., for other tasks), kept simpler
+        else: # Simpler logic for single caption
             pattern_prompt = prompt_prefix_placeholder + " " + caption + "."
             tokenized_pattern_prompts = torch.cat([clip.tokenize(pattern_prompt)]).to(self.device)
-            ctx_start_idx = 1 # Assuming it's always at the start for this simple case
+            ctx_start_idx = 1
             with torch.no_grad():
                 init_pattern_embedding = self.model.token_embedding(tokenized_pattern_prompts).type(self.dtype)
             context = {
@@ -291,15 +338,15 @@ class PromptCLIP_Shallow:
         loss_accumulator = 0
         logit_scale = self.logit_scale.exp()
 
-        if self.parallel: # optimizer is evaluating a whole population
+        if self.parallel:
             loss_accumulator = [0.0] * self.popsize
             all_pop_text_features = []
             for p_text in prompt_text_list_or_tensor:
                 features = self.text_encoder(p_text)
                 features = features / features.norm(dim=-1, keepdim=True)
                 all_pop_text_features.append(features)
-            pop_txt_features = torch.stack(all_pop_text_features) # [pop_size, n_cls, D]
-        else: # optimizer is evaluating a single candidate
+            pop_txt_features = torch.stack(all_pop_text_features)
+        else:
             text_features = self.text_encoder(prompt_text_list_or_tensor)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             current_prompt_image_for_eval_single = prompt_image_list_or_tensor
@@ -307,8 +354,8 @@ class PromptCLIP_Shallow:
         for batch_idx, batch in enumerate(self.train_loader):
             images_orig, labels_orig = self.parse_batch(batch)
 
-            if self.parallel: # Population evaluation
-                B_actual_batch = labels_orig.shape[0] # This is B_orig
+            if self.parallel:
+                B_actual_batch = labels_orig.shape[0]
                 pop_images_batch = images_orig.view(self.popsize, B_actual_batch, *images_orig.shape[1:])
 
                 for i in range(self.popsize):
@@ -322,7 +369,7 @@ class PromptCLIP_Shallow:
                     loss_for_member_batch_i = self.metric(tmp_logits, labels_orig)
                     loss_accumulator[i] += loss_for_member_batch_i.item()
 
-            else: # Not parallel (single candidate evaluation)
+            else:
                 eval_image = images_orig.to(self.dtype)
                 image_features = self.image_encoder(eval_image, current_prompt_image_for_eval_single)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
@@ -374,22 +421,22 @@ class PromptCLIP_Shallow:
                 self.best_prompt_image = prompt_candidate_image.detach().clone()
 
             objective_type_str = "maximized" if self.maximize_loss else "minimized"
-            dataset_type_str = "pre-attacked" if self.pre_attack_gen_config.get('enabled', False) else "clean"
+            ratio = self.pre_attack_gen_config.get('ratio', 0) if self.pre_attack_gen_config.get('enabled') else 0
+            dataset_type_str = f"{ratio*100:.0f}% attacked"
             logger.info(f"*** New best {objective_type_str} ({dataset_type_str} eval) loss found: {self.best_objective_loss_value:.4f} (at call {self.num_call}) ***")
 
-        # --- Intermediate Testing Block (conditional) ---
         if self.test_every_gens is not None and self.test_every_gens > 0:
             trigger_interval = self.test_every_gens if self.parallel else self.test_every_gens * self.popsize
             
             if self.num_call > 0 and (self.num_call % trigger_interval == 0):
                 current_generation = self.num_call if self.parallel else self.num_call // self.popsize
                 
-                # Calculate train accuracy with the current best prompts
                 acc_train_current = self.test_on_train_set()
                 self.train_acc.append(acc_train_current.item())
                 self.best_train_accuracy = acc_train_current.item()
                 
-                dataset_type_str = "Pre-Attacked" if self.pre_attack_gen_config['enabled'] else "Clean"
+                ratio = self.pre_attack_gen_config.get('ratio', 0) if self.pre_attack_gen_config.get('enabled') else 0
+                dataset_type_str = f"{ratio*100:.0f}% Attacked"
                 logger.info(f"\n--- Intermediate Test at Generation ~{current_generation} (on {dataset_type_str} Data) ---")
                 acc_test = self.test()
                 self.acc.append(acc_test.item())
@@ -400,9 +447,10 @@ class PromptCLIP_Shallow:
                 output_dir = os.path.join(self.output_dir,self.task_name)
                 initial_prompt_str_fn = f"_initPrompt" if self.initial_prompt_text is not None else ""
                 learned_pos_str_fn = f"_pos{self.learned_prompt_pos}"
-                pre_attack_gen_str_fn = "_preAttackGen" if self.pre_attack_gen_config['enabled'] else ""
+                pre_attack_gen_ratio_str_fn = f"_ratio{self.pre_attack_gen_config['ratio']}" if self.pre_attack_gen_config['enabled'] and self.pre_attack_gen_config['ratio'] < 1.0 else ""
+                pre_attack_gen_str_fn = f"_preAttackGen{pre_attack_gen_ratio_str_fn}" if self.pre_attack_gen_config['enabled'] else ""
 
-                fname = "{}{}{}_{}_{}_parallel{}{}_maxLoss{}.pth".format(
+                fname = "{}{}_{}_{}_parallel{}{}{}_maxLoss{}.pth".format(
                     self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn,
                     self.opt_name, self.backbone.replace("/", "-"),
                     self.parallel,
@@ -479,22 +527,20 @@ class PromptCLIP_Shallow:
         correct = 0.
         total = 0.
         
-        # Store and temporarily override parallel flags for encoders during test
         original_text_encoder_parallel = self.text_encoder.parallel
         original_image_encoder_parallel = self.image_encoder.parallel
         self.text_encoder.parallel = False
         self.image_encoder.parallel = False
 
-        # Use the best tuned prompts for all tests
         current_text_features_for_test = self.text_encoder(self.best_prompt_text)
         current_text_features_for_test = current_text_features_for_test / current_text_features_for_test.norm(dim=-1,keepdim=True)
         current_image_prompt_for_test = self.best_prompt_image
 
         for batch in self.test_loader:
             temp_original_class_parallel_attr = self.parallel
-            self.parallel = False # Affects parse_batch's internal logic
-            image,label = self.parse_batch(batch) # image [B,C,H,W], label [B]
-            self.parallel = temp_original_class_parallel_attr # Restore
+            self.parallel = False
+            image,label = self.parse_batch(batch)
+            self.parallel = temp_original_class_parallel_attr
 
             total += image.size(0)
 
@@ -514,12 +560,11 @@ class PromptCLIP_Shallow:
         acc = correct/total
         return acc
 
-
     def _generate_pre_attacked_dataset(self, clean_train_loader, clean_test_loader, gen_config):
         logger.info("--- Starting Pre-attacked Dataset Generation ---")
         logger.info(f"Generation Config: Epsilon={gen_config['epsilon']}, Alpha={gen_config['alpha']}, Iter={gen_config['num_iter']}")
 
-        # Setup normalization constants, as they are only needed here
+        # Setup normalization constants needed for PGD clipping
         mean = self.preprocess.transforms[-1].mean
         std = self.preprocess.transforms[-1].std
         norm_mean = torch.tensor(mean).to(self.device).view(3, 1, 1)
@@ -530,8 +575,11 @@ class PromptCLIP_Shallow:
         with torch.no_grad():
             guidance_text_features = self.get_original_text_features()
 
-        original_parallel_flag = self.parallel
+        # Store and set parallel flags for BOTH the main class and the encoder
+        original_main_parallel_flag = self.parallel
+        original_encoder_parallel_flag = self.image_encoder.parallel
         self.parallel = False
+        self.image_encoder.parallel = False # This is the crucial missing line
 
         def _run_pgd_attack(images, labels):
             images_orig = images.clone().detach()
@@ -539,7 +587,6 @@ class PromptCLIP_Shallow:
             alpha = gen_config['alpha']
             num_iter = gen_config['num_iter']
             
-            # Image perturbation with random start
             delta_img = torch.zeros_like(images_orig, requires_grad=True, device=self.device).to(images_orig.dtype)
             delta_img.data.uniform_(-epsilon, epsilon)
             delta_img.data = torch.clamp(images_orig + delta_img.data, min=norm_lower_limit, max=norm_upper_limit) - images_orig
@@ -549,16 +596,13 @@ class PromptCLIP_Shallow:
                 delta_img.requires_grad_(True)
                 perturbed_image = (images_orig + delta_img).to(self.dtype)
 
-                # Forward pass
-                image_features = self.image_encoder(perturbed_image, None) # No visual prompt for generation
+                # This call will now work because self.image_encoder.parallel is set
+                image_features = self.image_encoder(perturbed_image, None)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                 logits = self.logit_scale.exp() * image_features @ guidance_text_features.t()
                 loss = F.cross_entropy(logits, labels)
-
-                # Backward pass
                 loss.backward()
                 
-                # Update step
                 grad_sign_img = delta_img.grad.sign()
                 delta_img.data = delta_img.data + alpha * grad_sign_img.to(delta_img.dtype)
                 delta_img.data = torch.clamp(delta_img.data, -epsilon, epsilon)
@@ -567,45 +611,74 @@ class PromptCLIP_Shallow:
 
             return (images_orig + delta_img.detach()).clamp(min=norm_lower_limit, max=norm_upper_limit).to(self.dtype)
 
-
         def _process_loader(loader, desc):
-            attacked_images_list = []
-            attacked_labels_list = []
+            attacked_items = []
             logger.info(f"Generating attacked {desc} set...")
             for batch in tqdm(loader, desc=f"Attacking {desc} Set"):
                 images, labels = self.parse_batch(batch)
 
                 with torch.enable_grad():
                     attacked_images = _run_pgd_attack(images, labels)
-                attacked_images_list.append(attacked_images.cpu())
-                attacked_labels_list.append(labels.cpu())
-            return torch.cat(attacked_images_list), torch.cat(attacked_labels_list)
+                
+                # Store as list of dicts
+                for i in range(attacked_images.size(0)):
+                    attacked_items.append({
+                        "image": attacked_images[i].cpu(),
+                        "label": labels[i].cpu()
+                    })
 
-        train_images_tensor, train_labels_tensor = _process_loader(clean_train_loader, "train")
-        test_images_tensor, test_labels_tensor = _process_loader(clean_test_loader, "test")
+            return attacked_items
 
-        self.parallel = original_parallel_flag
+        attacked_train_items = _process_loader(clean_train_loader, "train")
+        attacked_test_items = _process_loader(clean_test_loader, "test")
 
-        attacked_train_dataset = PreAttackedDictDataset((train_images_tensor, train_labels_tensor), self.classes)
-        attacked_test_dataset = PreAttackedDictDataset((test_images_tensor, test_labels_tensor), self.classes)
+        # Restore both parallel flags
+        self.parallel = original_main_parallel_flag
+        self.image_encoder.parallel = original_encoder_parallel_flag
 
-        attacked_train_loader = torch.utils.data.DataLoader(attacked_train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        attacked_test_loader = torch.utils.data.DataLoader(attacked_test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        attacked_train_dataset = PreAttackedDictDataset(attacked_train_items, self.classes)
+        attacked_test_dataset = PreAttackedDictDataset(attacked_test_items, self.classes)
 
         logger.info("--- Pre-attacked Dataset Generation Finished ---")
-        return attacked_train_dataset, attacked_train_loader, attacked_test_dataset, attacked_test_loader
+        return attacked_train_dataset, attacked_test_dataset
 
     def load_dataset(self):
         is_pre_attack_gen_task = self.pre_attack_gen_config.get("enabled", False)
+        ratio = self.pre_attack_gen_config.get("ratio", 1.0)
 
         if is_pre_attack_gen_task:
             if not self.task_name.endswith("_PGD_GEN"):
                 raise ValueError(f"Task '{self.task_name}' is invalid for pre-attack generation. Name must end with _PGD_GEN.")
+            
             base_task_name = self.task_name.replace("_PGD_GEN", "")
             logger.info(f"Pre-attack generation enabled. Base dataset: '{base_task_name}'.")
 
+            # Always load clean data first
             self._load_specific_dataset(base_task_name)
-            self.train_data, self.train_loader, self.test_data, self.test_loader = self._generate_pre_attacked_dataset(self.train_loader, self.test_loader, self.pre_attack_gen_config)
+            
+            if ratio == 0.0:
+                logger.warning("Pre-attack generation was enabled, but ratio is 0.0. Using a fully CLEAN dataset.")
+                # self.train_data, etc. are already set to clean, so do nothing.
+            elif ratio == 1.0:
+                logger.info("Ratio is 1.0. Generating a fully ATTACKED dataset.")
+                attacked_train_data, attacked_test_data = self._generate_pre_attacked_dataset(self.train_loader, self.test_loader, self.pre_attack_gen_config)
+                self.train_data = attacked_train_data
+                self.test_data = attacked_test_data
+                self.train_loader = torch.utils.data.DataLoader(self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=4)
+                self.test_loader = torch.utils.data.DataLoader(self.test_data, batch_size=self.batch_size, shuffle=False, num_workers=4)
+            elif 0.0 < ratio < 1.0:
+                logger.info(f"Ratio is {ratio}. Generating a MIXED dataset.")
+                clean_train_data, clean_test_data = self.train_data, self.test_data
+                attacked_train_data, attacked_test_data = self._generate_pre_attacked_dataset(self.train_loader, self.test_loader, self.pre_attack_gen_config)
+                
+                self.train_data = CombinedDataset(clean_train_data, attacked_train_data, ratio)
+                self.test_data = CombinedDataset(clean_test_data, attacked_test_data, ratio)
+
+                self.train_loader = torch.utils.data.DataLoader(self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=4)
+                self.test_loader = torch.utils.data.DataLoader(self.test_data, batch_size=self.batch_size, shuffle=False, num_workers=4)
+            else:
+                 raise ValueError(f"pre_attack_gen_ratio must be between 0.0 and 1.0, but got {ratio}")
+
         else:
             self._load_specific_dataset(self.task_name)
 
@@ -622,7 +695,7 @@ class PromptCLIP_Shallow:
             self.n_cls = len(self.classes)
             self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed)
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess)
-        elif task_name == 'CIFAR10_PGD': # This is the static pre-downloaded one
+        elif task_name == 'CIFAR10_PGD':
             self.train_data,self.train_loader = load_train_cifar10_pgd(batch_size=self.batch_size,shots=self.k_shot)
             self.test_data, self.test_loader = load_test_cifar10_pgd(batch_size=self.batch_size)
             self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
@@ -697,13 +770,11 @@ class PromptCLIP_Shallow:
         image = batch["image"]
         label = batch["label"]
         image = image.to(device=self.device, dtype=self.dtype if image.dtype != torch.uint8 else torch.float32)
-        if image.dtype == torch.uint8: # common for PIL loaded images
-            image = image.float() / 255.0 # Normalize if uint8
+        if image.dtype == torch.uint8:
+            image = image.float() / 255.0
         
         label = label.to(device=self.device)
         
-        # This repetition is for when eval is processing a whole population (self.parallel=True)
-        # and each member of the population needs to be evaluated on the same batch of images.
         if self.parallel: 
             image = image.repeat(self.popsize, 1, 1, 1)
         return image, label
