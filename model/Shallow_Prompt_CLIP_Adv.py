@@ -1,5 +1,3 @@
---- START OF FILE Shallow_Prompt_CLIP_Adv.py ---
-
 import os
 import torch
 from torch.nn import functional as F
