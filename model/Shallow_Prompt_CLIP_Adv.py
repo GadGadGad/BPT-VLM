@@ -6,7 +6,7 @@ import clip
 from torchvision.datasets import CIFAR100, CIFAR10
 from dataset.cifar100 import load_train_cifar100, load_test_cifar100
 from dataset.cifar10 import load_train_cifar10, load_test_cifar10
-from model.shallow_encoder_adv import TextEncoder,VisionEncoder
+from model.shallow_encoder import TextEncoder,VisionEncoder
 from model.analysis_utils import Analysis_Util
 from dataset.general import load_train,load_test
 from tqdm import tqdm
@@ -28,16 +28,19 @@ class PromptCLIP_Shallow:
         self.cfg = cfg # Store cfg for PGD params
         self.initial_prompt_text = cfg.get("initial_prompt_text", None)
         self.learned_prompt_pos = cfg.get("learned_prompt_pos", "prefix")
-        self.test_every_gens = cfg.get("test_every_n_gens", None) # <-- NEW
+        self.test_every_gens = cfg.get("test_every_n_gens", None) 
         self.num_call = 0
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
         self.loss = []
         self.acc = []
-        self.acc_attack = [] # Kept for list structure consistency, but will not be populated
+        self.acc_clean_during_attack_run = [] # --- NEW: To store clean acc during attacked runs
+        self.acc_attack = [] # Kept for list structure consistency
         self.train_acc = []
         self._training_dataset_snapshot = None # Holder for the dataset
+        self.test_loader_clean = None # --- NEW: Holder for the clean test loader
 
+        
         # --- REORDERED: Initialize all model-dependent components BEFORE dataset loading ---
         
         # Text Encoder
@@ -58,7 +61,7 @@ class PromptCLIP_Shallow:
         self.init_prompt = None
         self.imsize = self.image_encoder.input_resolution
         self.logit_scale = self.model.logit_scale
-        self.dtype = self.model.dtype # FIX: Defined before load_dataset
+        self.dtype = self.model.dtype 
         self.sigma = cfg["sigma"]
         
         # Language Linear Layer
@@ -105,7 +108,7 @@ class PromptCLIP_Shallow:
         self.best_prompt_text = None
         self.best_prompt_image = None
         self.best_accuracy = 0.0
-        self.best_accuracy_attack = 0.0 # Kept for consistency, but will not be populated
+        self.best_accuracy_attack = 0.0 
         self.best_train_accuracy = 0.0
 
     @torch.enable_grad()
@@ -416,11 +419,21 @@ class PromptCLIP_Shallow:
                 obj_str = "maximize" if self.maximize_loss else "minimize"
 
                 logger.info(f"\n--- Intermediate Test at Generation ~{current_generation} (Prompts from {eval_loss_type_str} eval, obj: {obj_str} loss) ---")
-                acc_clean = self.test()
-                self.acc.append(acc_clean.item())
-                self.best_accuracy = max(acc_clean.item(), self.best_accuracy)
+                
+                # --- MODIFIED: Log both attacked and clean test accuracy if applicable ---
+                acc_test = self.test() # This uses the primary test_loader (attacked or clean)
+                self.acc.append(acc_test.item())
+                self.best_accuracy = max(acc_test.item(), self.best_accuracy)
+                
+                test_set_type = "Attacked" if self.cfg.get('attack_test') else "Clean"
                 logger.info(f"Train Accuracy: {self.best_train_accuracy:.4f}")
-                logger.info(f"Test Clean Accuracy: {acc_clean:.4f} (Best Test Clean: {self.best_accuracy:.4f})")
+                logger.info(f"Test {test_set_type} Accuracy: {acc_test:.4f} (Best Test {test_set_type}: {self.best_accuracy:.4f})")
+                
+                if self.test_loader_clean is not None:
+                    acc_clean_baseline = self.test(use_clean_loader=True)
+                    self.acc_clean_during_attack_run.append(acc_clean_baseline.item())
+                    logger.info(f"Test Clean (Baseline) Accuracy: {acc_clean_baseline:.4f}")
+                # --- END MODIFIED ---
 
                 output_dir = os.path.join(self.output_dir,self.task_name)
                 
@@ -434,16 +447,19 @@ class PromptCLIP_Shallow:
                     self.maximize_loss
                 )
 
-                content = {"task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
-                        "best_accuracy":self.best_accuracy, "acc":self.acc,
-                        "best_train_accuracy": self.best_train_accuracy, "train_acc": self.train_acc,
-                        "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
-                        "training_dataset_snapshot": self._training_dataset_snapshot,
-                        "historical_losses":self.loss,
-                        "best_objective_loss_value": self.best_objective_loss_value,
-                        "maximize_loss_setting": self.maximize_loss,
-                        "num_call":self.num_call,
-                        "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict()}
+                content = {
+                    "task_name":self.task_name,"opt_name":self.opt_name,"backbone":self.backbone,
+                    "best_accuracy":self.best_accuracy, "acc":self.acc,
+                    "acc_clean_during_attack_run": self.acc_clean_during_attack_run,
+                    "best_train_accuracy": self.best_train_accuracy, "train_acc": self.train_acc,
+                    "best_prompt_text":self.best_prompt_text,"best_prompt_image":self.best_prompt_image,
+                    "training_dataset_snapshot": self._training_dataset_snapshot,
+                    "historical_losses":self.loss,
+                    "best_objective_loss_value": self.best_objective_loss_value,
+                    "maximize_loss_setting": self.maximize_loss,
+                    "num_call":self.num_call,
+                    "Linear_L":self.linear_L.state_dict(),"Linear_V":self.linear_V.state_dict()
+                }
                 Analysis_Util.save_results(content,output_dir,fname)
 
         if self.parallel:
@@ -494,10 +510,17 @@ class PromptCLIP_Shallow:
         return acc
 
     @torch.no_grad()
-    def test(self):
+    def test(self, use_clean_loader=False): # --- NEW: argument to select loader ---
         if self.best_prompt_text is None or self.best_prompt_image is None:
             logger.warning("Test skipped: no best tuned prompt available for evaluation.")
             return torch.tensor(0.0)
+
+        # --- NEW: Select the appropriate data loader ---
+        if use_clean_loader and self.test_loader_clean:
+            active_loader = self.test_loader_clean
+        else:
+            active_loader = self.test_loader
+        # --- END NEW ---
 
         correct = 0.
         total = 0.
@@ -513,7 +536,7 @@ class PromptCLIP_Shallow:
         current_text_features_for_test = current_text_features_for_test / current_text_features_for_test.norm(dim=-1,keepdim=True)
         current_image_prompt_for_test = self.best_prompt_image
 
-        for batch in self.test_loader:
+        for batch in active_loader: # Use the selected loader
             temp_original_class_parallel_attr = self.parallel
             self.parallel = False # Affects parse_batch's internal logic
             image,label = self.parse_batch(batch) # image [B,C,H,W], label [B]
@@ -539,7 +562,7 @@ class PromptCLIP_Shallow:
 
 
     def load_dataset(self):
-        # --- NEW: Set up attack config if enabled ---
+        # --- Set up attack config if enabled ---
         attack_config = None
         if self.cfg.get("use_attacked_dataset", False):
             attack_config = {
@@ -552,7 +575,21 @@ class PromptCLIP_Shallow:
         
         train_attack_cfg = attack_config if self.cfg.get("attack_train") else None
         test_attack_cfg = attack_config if self.cfg.get("attack_test") else None
-        # --- END NEW ---
+        
+        # --- Logic to load clean test set as baseline if attacked test set is used ---
+        if test_attack_cfg is not None:
+            logger.info("Attack on test set is enabled. Also loading a clean test set for baseline comparison.")
+            if self.task_name == 'CIFAR10':
+                _, self.test_loader_clean = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=None)
+            elif self.task_name in ['StanfordCars', 'OxfordPets', 'UCF-101', 'DTD', 'EuroSAT', 'Food101', 'caltech101', 'SUN397', 'ImageNet']:
+                 # Dynamically determine the dataset_dir from the config file
+                task_config = self.cfg.get(self.task_name, {})
+                dataset_dir = task_config.get('dataset_dir', self.task_name + "_Gen") # Fallback to a default pattern
+                _, self.test_loader_clean = load_test(batch_size=self.batch_size, preprocess=self.preprocess,
+                                                            root=self.data_dir, dataset_dir=dataset_dir, attack_config=None)
+            else: # CIFAR100 and other unhandled cases
+                _, self.test_loader_clean = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess)
+
 
         if self.task_name == 'CIFAR100':
             self.dataset = CIFAR100(self.data_dir, transform=self.preprocess, download=True)
@@ -566,7 +603,7 @@ class PromptCLIP_Shallow:
             self.classes = self.dataset.classes
             self.n_cls = len(self.classes)
             self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed, attack_config=train_attack_cfg)
-            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=test_attack_cfg)
+            self.test_data, self.test_loader = load_test_cifFar10(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=test_attack_cfg)
         elif self.task_name == 'StanfordCars':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
                                                            root=self.data_dir,dataset_dir="Cars_Gen", attack_config=train_attack_cfg)

@@ -268,10 +268,16 @@ optimization_time = end_time - start_time
 logger.info(f"Total Optimization Time: {optimization_time:.2f} seconds")
 
 logger.info("\n--- Final Evaluation using Best Prompts ---")
-final_acc_clean = prompt_clip.test()
-logger.info(f"Final Clean Accuracy: {final_acc_clean:.4f}")
+final_acc_primary = prompt_clip.test()
+final_acc_clean_baseline = None
 
-# Final attacked accuracy evaluation removed
+test_set_type = "Attacked" if args.attack_test else "Clean"
+logger.info(f"Final {test_set_type} Accuracy: {final_acc_primary:.4f}")
+
+if prompt_clip.test_loader_clean is not None:
+    final_acc_clean_baseline = prompt_clip.test(use_clean_loader=True)
+    logger.info(f"Final Clean (Baseline) Accuracy: {final_acc_clean_baseline:.4f}")
+
 
 pth_filename = fname_base + "_final.pth"
 final_results_path = os.path.join(output_dir, pth_filename)
@@ -280,12 +286,14 @@ content = {
     "task_name": args.task_name, "opt_name": cfg["opt_name"], "backbone": cfg["backbone"],
     "k_shot": cfg["k_shot"],
     "best_accuracy": prompt_clip.best_accuracy, "acc": prompt_clip.acc,
+    "acc_clean_during_attack_run": prompt_clip.acc_clean_during_attack_run,
     "best_train_accuracy": prompt_clip.best_train_accuracy, "train_acc": prompt_clip.train_acc,
     "best_prompt_text": prompt_clip.best_prompt_text, "best_prompt_image": prompt_clip.best_prompt_image,
     "best_objective_loss_value": prompt_clip.best_objective_loss_value,
     "maximize_loss_setting": prompt_clip.maximize_loss,
     "loss": prompt_clip.loss, "num_call": prompt_clip.num_call,
-    "final_acc_clean": final_acc_clean.item(),
+    f"final_acc_{test_set_type.lower()}": final_acc_primary.item(),
+    "final_acc_clean_baseline": final_acc_clean_baseline.item() if final_acc_clean_baseline is not None else "N/A",
     "Linear_L": prompt_clip.linear_L.state_dict(),
     "Linear_V": prompt_clip.linear_V.state_dict(),
     "optimization_time_seconds": optimization_time,
