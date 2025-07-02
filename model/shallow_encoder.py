@@ -126,6 +126,7 @@ class VisionEncoder(nn.Module):
         self.tranformer = clip_model.visual.transformer
         self.ln_post = clip_model.visual.ln_post
         self.proj = clip_model.visual.proj
+        self.parallel = False
 
     def set_context(self,context):
         self.n_prompt_tokens_V = context["n_prompt_tokens_V"]
