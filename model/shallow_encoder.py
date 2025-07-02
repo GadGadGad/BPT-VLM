@@ -9,7 +9,8 @@ class TextEncoder(nn.Module):
         self.ln_final = clip_model.ln_final
         self.text_projection = clip_model.text_projection
         self.dtype = clip_model.dtype
-
+        self.parallel = False
+        
     def set_context(self,context):
         self.n_cls = context["n_cls"]
         self.n_prompt_tokens_L = context["n_prompt_tokens_L"]
