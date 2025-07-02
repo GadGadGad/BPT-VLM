@@ -35,15 +35,23 @@ prompt_group.add_argument("--learned_prompt_pos", type=str, default="prefix", ch
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
 
-# --- NEW: PGD Attacked Dataset Generation Arguments ---
+# --- MODIFIED: PGD Attacked Dataset Generation Arguments ---
 attack_group = parser.add_argument_group('PGD Attacked Dataset Configuration')
 attack_group.add_argument("--use_attacked_dataset", action='store_true', help="Enable generation/use of a PGD-attacked dataset.")
-attack_group.add_argument("--attack_ratio", type=float, default=0.5, help="Ratio of images to attack in the dataset.")
+attack_group.add_argument("--attack_train_ratio", type=float, default=0.5, help="Ratio of images to attack in the training set.")
+attack_group.add_argument("--attack_test_ratio", type=float, default=0.5, help="Ratio of images to attack in the test set.")
 attack_group.add_argument("--attack_train", action='store_true', help="Apply attack to the training set.")
 attack_group.add_argument("--attack_test", action='store_true', help="Apply attack to the test set.")
 attack_group.add_argument("--pgd_eps", type=float, default=8/255.0, help="PGD attack epsilon.")
 attack_group.add_argument("--pgd_alpha", type=float, default=2/255.0, help="PGD attack alpha (step size).")
 attack_group.add_argument("--pgd_steps", type=int, default=10, help="Number of PGD attack steps.")
+# --- END MODIFIED ---
+
+# --- NEW: Noise Injection Arguments ---
+noise_group = parser.add_argument_group('Noise Injection Configuration')
+noise_group.add_argument("--noise_type_text", type=str, default="none", choices=["none", "gaussian", "uniform", "binomial"], help="Type of noise to add to text prompts during tuning.")
+noise_group.add_argument("--noise_type_visual", type=str, default="none", choices=["none", "gaussian", "uniform", "binomial"], help="Type of noise to add to visual prompts during tuning.")
+noise_group.add_argument("--noise_level", type=float, default=0.1, help="Magnitude/standard deviation of the injected noise.")
 # --- END NEW ---
 
 
@@ -67,15 +75,19 @@ cfg["initial_prompt_text"] = args.initial_prompt_text
 cfg["learned_prompt_pos"] = args.learned_prompt_pos
 cfg["test_every_n_gens"] = args.test_every_n_gens
 
-# --- NEW: Add PGD args to config dict ---
+# --- MODIFIED: Add PGD and Noise args to config dict ---
 cfg["use_attacked_dataset"] = args.use_attacked_dataset
-cfg["attack_ratio"] = args.attack_ratio
+cfg["attack_train_ratio"] = args.attack_train_ratio
+cfg["attack_test_ratio"] = args.attack_test_ratio
 cfg["attack_train"] = args.attack_train
 cfg["attack_test"] = args.attack_test
 cfg["pgd_eps"] = args.pgd_eps
 cfg["pgd_alpha"] = args.pgd_alpha
 cfg["pgd_steps"] = args.pgd_steps
-# --- END NEW ---
+cfg["noise_type_text"] = args.noise_type_text
+cfg["noise_type_visual"] = args.noise_type_visual
+cfg["noise_level"] = args.noise_level
+# --- END MODIFIED ---
 
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
@@ -92,8 +104,13 @@ Analysis_Util.mkdir_if_missing(output_dir)
 initial_prompt_str_fn = f"_initPrompt" if cfg["initial_prompt_text"] is not None else ""
 learned_pos_str_fn = f"_pos{cfg['learned_prompt_pos']}"
 
+# --- NEW: Add noise parameters to filename ---
+noise_str_fn = ""
+if cfg['noise_type_text'] != 'none' or cfg['noise_type_visual'] != 'none':
+    noise_str_fn = f"_noiseT_{cfg['noise_type_text']}_noiseV_{cfg['noise_type_visual']}_level_{cfg['noise_level']}"
+# --- END NEW ---
 
-fname_base = "{}{}_{}_{}_parallel{}{}_maxLoss{}".format(
+fname_base = "{}{}_{}_{}_parallel{}{}_maxLoss{}{}".format(
     cfg["k_shot"],
     args.task_name,
     cfg["opt_name"],
@@ -101,7 +118,8 @@ fname_base = "{}{}_{}_{}_parallel{}{}_maxLoss{}".format(
     args.parallel,
     initial_prompt_str_fn,
     learned_pos_str_fn,
-    cfg["maximize_loss"]
+    cfg["maximize_loss"],
+    noise_str_fn # Added noise string
 )
 log_filename = fname_base + ".log"
 log_filepath = os.path.join(output_dir, log_filename)
@@ -197,13 +215,17 @@ logger.info(f"Initial Prompt Text: '{cfg['initial_prompt_text']}'")
 logger.info(f"Learned Prompt Position: {cfg['learned_prompt_pos']}")
 logger.info(f"Optimization Objective: {'Maximize' if cfg['maximize_loss'] else 'Minimize'} Loss")
 logger.info(f"Budget: {opt_cfg['budget']}")
-logger.info(f"Adversarial Training (during optimization): False")
-logger.info(f"Attack during Final Test: False")
+
 if args.use_attacked_dataset:
     logger.info("--- Using Pre-Attacked PGD Dataset for Tuning/Testing ---")
-    logger.info(f"Attack on TRAIN set: {args.attack_train}")
-    logger.info(f"Attack on TEST set: {args.attack_test}")
-    logger.info(f"Attack Ratio: {args.attack_ratio}, Epsilon: {args.pgd_eps}, Alpha: {args.pgd_alpha}, Steps: {args.pgd_steps}")
+    logger.info(f"Attack on TRAIN set: {args.attack_train} (Ratio: {args.attack_train_ratio})")
+    logger.info(f"Attack on TEST set: {args.attack_test} (Ratio: {args.attack_test_ratio})")
+    logger.info(f"PGD Params - Epsilon: {args.pgd_eps}, Alpha: {args.pgd_alpha}, Steps: {args.pgd_steps}")
+
+if args.noise_type_text != 'none' or args.noise_type_visual != 'none':
+    logger.info("--- Noise Injection Enabled During Tuning ---")
+    logger.info(f"Text Noise: type={args.noise_type_text}, level={args.noise_level}")
+    logger.info(f"Visual Noise: type={args.noise_type_visual}, level={args.noise_level}")
 
 
 start_time = time.time()

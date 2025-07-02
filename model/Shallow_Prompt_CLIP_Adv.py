@@ -34,12 +34,16 @@ class PromptCLIP_Shallow:
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
         self.loss = []
         self.acc = []
-        self.acc_clean_during_attack_run = [] # --- NEW: To store clean acc during attacked runs
+        self.acc_clean_during_attack_run = []
         self.acc_attack = [] # Kept for list structure consistency
         self.train_acc = []
         self._training_dataset_snapshot = None # Holder for the dataset
-        self.test_loader_clean = None # --- NEW: Holder for the clean test loader
+        self.test_loader_clean = None # Holder for the clean test loader
 
+        # --- NEW: Noise injection parameters ---
+        self.noise_type_text = cfg.get("noise_type_text", "none")
+        self.noise_type_visual = cfg.get("noise_type_visual", "none")
+        self.noise_level = cfg.get("noise_level", 0.1)
         
         # --- REORDERED: Initialize all model-dependent components BEFORE dataset loading ---
         
@@ -280,11 +284,32 @@ class PromptCLIP_Shallow:
                    "batch_size": self.batch_size, "pop_size": self.popsize, "parallel": self.parallel}
         return context
 
+    def _add_noise(self, tensor, noise_type):
+        if noise_type == "none" or self.noise_level == 0:
+            return tensor
+        
+        if noise_type == "gaussian":
+            noise = torch.randn_like(tensor) * self.noise_level
+        elif noise_type == "uniform":
+            # Creates noise in [-noise_level, +noise_level]
+            noise = (torch.rand_like(tensor) * 2 - 1) * self.noise_level
+        elif noise_type == "binomial":
+            # Bernoulli {-1, 1} noise, scaled by level
+            noise = (torch.bernoulli(torch.full_like(tensor, 0.5)) * 2 - 1) * self.noise_level
+        else:
+            return tensor
+            
+        return tensor + noise.to(self.device)
+
     def generate_text_prompts(self,intrinsic_vectors):
         prompt_list = []
         for vector in intrinsic_vectors:
             z = torch.tensor(vector, device=self.device, dtype=self.dtype)
             z = self.linear_L(z).reshape(self.n_prompt_tokens_L, self.ctx_dim_L)
+            
+            # --- NEW: Add noise ---
+            z = self._add_noise(z, self.noise_type_text)
+
             if self.init_prompt is not None:
                 z = z + self.init_prompt
 
@@ -296,6 +321,10 @@ class PromptCLIP_Shallow:
         for vector in intrinsic_vectors:
             z = torch.tensor(vector,device=self.device,dtype=self.dtype)
             z = self.linear_V(z).reshape(self.n_prompt_tokens_V, self.ctx_dim_V)
+
+            # --- NEW: Add noise ---
+            z = self._add_noise(z, self.noise_type_visual)
+
             visual_prompt_list.append(z)
         return visual_prompt_list
 
@@ -439,12 +468,17 @@ class PromptCLIP_Shallow:
                 
                 initial_prompt_str_fn = f"_initPrompt" if self.initial_prompt_text is not None else ""
                 learned_pos_str_fn = f"_pos{self.learned_prompt_pos}"
+                
+                noise_str_fn = ""
+                if self.noise_type_text != 'none' or self.noise_type_visual != 'none':
+                    noise_str_fn = f"_noiseT_{self.noise_type_text}_noiseV_{self.noise_type_visual}_level_{self.noise_level}"
 
-                fname = "{}{}{}_{}_{}_parallel{}_maxLoss{}.pth".format(
+                fname = "{}{}{}_{}_{}_parallel{}_maxLoss{}{}.pth".format(
                     self.k_shot, self.task_name, initial_prompt_str_fn, learned_pos_str_fn,
                     self.opt_name, self.backbone.replace("/", "-"),
                     self.parallel,
-                    self.maximize_loss
+                    self.maximize_loss,
+                    noise_str_fn
                 )
 
                 content = {
@@ -562,29 +596,34 @@ class PromptCLIP_Shallow:
 
 
     def load_dataset(self):
-        # --- Set up attack config if enabled ---
-        attack_config = None
-        if self.cfg.get("use_attacked_dataset", False):
-            attack_config = {
+        # --- MODIFIED: Set up attack configs with separate ratios ---
+        train_attack_cfg = None
+        if self.cfg.get("use_attacked_dataset", False) and self.cfg.get("attack_train", False):
+            train_attack_cfg = {
                 "model": self,
-                "ratio": self.cfg.get("attack_ratio", 0.5),
+                "ratio": self.cfg.get("attack_train_ratio", 0.5),
                 "eps": self.cfg.get("pgd_eps", 8/255.0),
                 "alpha": self.cfg.get("pgd_alpha", 2/255.0),
                 "steps": self.cfg.get("pgd_steps", 10),
             }
-        
-        train_attack_cfg = attack_config if self.cfg.get("attack_train") else None
-        test_attack_cfg = attack_config if self.cfg.get("attack_test") else None
-        
-        # --- Logic to load clean test set as baseline if attacked test set is used ---
+            
+        test_attack_cfg = None
+        if self.cfg.get("use_attacked_dataset", False) and self.cfg.get("attack_test", False):
+            test_attack_cfg = {
+                "model": self,
+                "ratio": self.cfg.get("attack_test_ratio", 0.5),
+                "eps": self.cfg.get("pgd_eps", 8/255.0),
+                "alpha": self.cfg.get("pgd_alpha", 2/255.0),
+                "steps": self.cfg.get("pgd_steps", 10),
+            }
         if test_attack_cfg is not None:
             logger.info("Attack on test set is enabled. Also loading a clean test set for baseline comparison.")
             if self.task_name == 'CIFAR10':
-                _, self.test_loader_clean = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=None)
+                _, self.test_loader_clean = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, attack_config=None)
             elif self.task_name in ['StanfordCars', 'OxfordPets', 'UCF-101', 'DTD', 'EuroSAT', 'Food101', 'caltech101', 'SUN397', 'ImageNet']:
                  # Dynamically determine the dataset_dir from the config file
                 task_config = self.cfg.get(self.task_name, {})
-                dataset_dir = task_config.get('dataset_dir', self.task_name + "_Gen") # Fallback to a default pattern
+                dataset_dir = task_config.get('dataset_dir', self.task_name + "_Gen")
                 _, self.test_loader_clean = load_test(batch_size=self.batch_size, preprocess=self.preprocess,
                                                             root=self.data_dir, dataset_dir=dataset_dir, attack_config=None)
             else: # CIFAR100 and other unhandled cases
@@ -602,8 +641,8 @@ class PromptCLIP_Shallow:
             self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=True)
             self.classes = self.dataset.classes
             self.n_cls = len(self.classes)
-            self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed, attack_config=train_attack_cfg)
-            self.test_data, self.test_loader = load_test_cifFar10(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=test_attack_cfg)
+            self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed, root=self.data_dir, attack_config=train_attack_cfg)
+            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, attack_config=test_attack_cfg)
         elif self.task_name == 'StanfordCars':
             self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
                                                            root=self.data_dir,dataset_dir="Cars_Gen", attack_config=train_attack_cfg)

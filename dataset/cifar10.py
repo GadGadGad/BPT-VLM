@@ -46,18 +46,19 @@ def _construct_attacked_data(clean_data, attack_config, preprocess_fn, name="dat
 
 class Cifar_FewshotDataset(Dataset):
     def __init__(self, args, attack_config=None):
+        self.root = args["root"]
         self.shots = args["shots"]
         self.preprocess = args["preprocess"]
         self.seed = args["seed"]
         
-        self.all_train_base = CIFAR10(os.path.expanduser("../dataset"), transform=None, download=True, train=True)
+        self.all_train_base = CIFAR10(self.root, transform=None, download=True, train=True)
         clean_data = self.construct_few_shot_data()
 
         if attack_config is None:
             print("Using clean training data for CIFAR10.")
             self.new_train_data = [[self.preprocess(item[0]), item[1]] for item in clean_data]
         else:
-            cache_dir = os.path.join(os.path.expanduser("../dataset"), "cifar10_cache")
+            cache_dir = os.path.join(self.root, "cifar10_cache")
             os.makedirs(cache_dir, exist_ok=True)
             ratio = attack_config['ratio']
             eps = attack_config['eps']
@@ -98,8 +99,8 @@ class Cifar_FewshotDataset(Dataset):
                 train_shot_count[label] += 1
         return new_train_data
 
-def load_train_cifar10(batch_size=1,shots=16,preprocess=None,seed=42, attack_config=None):
-    args = {"shots":shots,"preprocess":preprocess, "seed": seed}
+def load_train_cifar10(batch_size=1,shots=16,preprocess=None,seed=42, root=None, attack_config=None):
+    args = {"shots":shots,"preprocess":preprocess, "seed": seed, "root": root}
     train_data = Cifar_FewshotDataset(args, attack_config=attack_config)
     train_loader = DataLoader(train_data,batch_size=batch_size,shuffle=True,num_workers=4)
     return train_data,train_loader
@@ -107,14 +108,15 @@ def load_train_cifar10(batch_size=1,shots=16,preprocess=None,seed=42, attack_con
 class Cifar_TestDataset(Dataset):
     def __init__(self, args, attack_config=None):
         self.preprocess = args["preprocess"]
-        all_test_base = CIFAR10(os.path.expanduser("../dataset"), transform=None, download=True, train=False)
+        self.root = args["root"]
+        all_test_base = CIFAR10(self.root, transform=None, download=True, train=False)
         clean_data = list(all_test_base)
 
         if attack_config is None:
             print("Using clean test data for CIFAR10.")
             self.all_test = [[self.preprocess(item[0]), item[1]] for item in clean_data]
         else:
-            cache_dir = os.path.join(os.path.expanduser("../dataset"), "cifar10_cache")
+            cache_dir = os.path.join(self.root, "cifar10_cache")
             os.makedirs(cache_dir, exist_ok=True)
             ratio = attack_config['ratio']
             eps = attack_config['eps']
@@ -138,10 +140,8 @@ class Cifar_TestDataset(Dataset):
         return {"image": self.all_test[idx][0], "label": self.all_test[idx][1]}
 
 
-def load_test_cifar10(batch_size=1,preprocess=None, attack_config=None):
-    args = {"preprocess":preprocess}
+def load_test_cifar10(batch_size=1,preprocess=None, root=None, attack_config=None):
+    args = {"preprocess":preprocess, "root": root}
     test_data = Cifar_TestDataset(args, attack_config=attack_config)
     test_loader = DataLoader(test_data,batch_size=batch_size,shuffle=True,num_workers=4)
     return test_data,test_loader
-
-print(os.path.expanduser("../dataset"))
