@@ -94,10 +94,6 @@ cfg["noise_type_visual"] = args.noise_type_visual
 cfg["noise_level"] = args.noise_level
 # --- END MODIFIED ---
 
-if cfg['n_prompt_tokens_L'] == 0:
-    cfg['intrinsic_dim_L'] = 0
-if cfg['n_prompt_tokens_V'] == 0:
-    cfg['intrinsic_dim_V'] = 0
     
 
 if args.task_name in cfg:
@@ -117,6 +113,10 @@ if args.intrinsic_dim_L is not None:
 if args.intrinsic_dim_V is not None:
     cfg['intrinsic_dim_V'] = args.intrinsic_dim_V
     
+if cfg['n_prompt_tokens_L'] == 0:
+    cfg['intrinsic_dim_L'] = 0
+if cfg['n_prompt_tokens_V'] == 0:
+    cfg['intrinsic_dim_V'] = 0
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir)
 
