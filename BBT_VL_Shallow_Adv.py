@@ -28,6 +28,11 @@ parser.add_argument("--backbone", default="ViT-B/32", type=str)
 parser.add_argument("--k_shot", default=16, type=int, help='How many shot to use')
 parser.add_argument("--test_every_n_gens", type=int, default=None, help="Run test evaluation every N generations. If not set, testing only occurs at the very end.")
 
+dim_group = parser.add_argument_group('Prompt Dimension Configuration')
+dim_group.add_argument("--n_prompt_tokens_L", type=int, default=None, help="Number of learnable text prompt tokens.")
+dim_group.add_argument("--n_prompt_tokens_V", type=int, default=None, help="Number of learnable visual prompt tokens.")
+dim_group.add_argument("--intrinsic_dim_L", type=int, default=None, help="Intrinsic dimension for text prompts.")
+dim_group.add_argument("--intrinsic_dim_V", type=int, default=None, help="Intrinsic dimension for visual prompts.")
 
 prompt_group = parser.add_argument_group('Initial Prompt Configuration')
 prompt_group.add_argument("--initial_prompt_text", type=str, default=None, help="Initial text prompt (e.g., 'a photo of a'). If None, no initial prompt is used.")
@@ -89,6 +94,12 @@ cfg["noise_type_visual"] = args.noise_type_visual
 cfg["noise_level"] = args.noise_level
 # --- END MODIFIED ---
 
+if cfg['n_prompt_tokens_L'] == 0:
+    cfg['intrinsic_dim_L'] = 0
+if cfg['n_prompt_tokens_V'] == 0:
+    cfg['intrinsic_dim_V'] = 0
+    
+
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
         cfg[k]=v
@@ -97,6 +108,15 @@ else:
 
 # White-box attack configurations removed
 
+if args.n_prompt_tokens_L is not None:
+    cfg['n_prompt_tokens_L'] = args.n_prompt_tokens_L
+if args.n_prompt_tokens_V is not None:
+    cfg['n_prompt_tokens_V'] = args.n_prompt_tokens_V
+if args.intrinsic_dim_L is not None:
+    cfg['intrinsic_dim_L'] = args.intrinsic_dim_L
+if args.intrinsic_dim_V is not None:
+    cfg['intrinsic_dim_V'] = args.intrinsic_dim_V
+    
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir)
 
@@ -155,12 +175,19 @@ else:
 
 def fitness_eval(prompt_zip_np):
     prompt_zip_np = np.array(prompt_zip_np)
-    prompt_text_intrinsic = prompt_zip_np[:intrinsic_dim_L]
-    prompt_image_intrinsic = prompt_zip_np[intrinsic_dim_L:]
-
-    prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic])
-    prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic])
-
+    prompt_text_intrinsic = None
+    prompt_image_intrinsic = None
+    
+    current_pos = 0
+    if intrinsic_dim_L > 0:
+        prompt_text_intrinsic = prompt_zip_np[current_pos : current_pos + intrinsic_dim_L]
+        current_pos += intrinsic_dim_L
+    if intrinsic_dim_V > 0:
+        prompt_image_intrinsic = prompt_zip_np[current_pos : current_pos + intrinsic_dim_V]
+        
+    prompt_text_list = prompt_clip.generate_text_prompts([prompt_text_intrinsic] if prompt_text_intrinsic is not None else [None])
+    prompt_image_list = prompt_clip.generate_visual_prompts([prompt_image_intrinsic] if prompt_image_intrinsic is not None else [None])
+    
     original_parallel = prompt_clip.parallel
     prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
     fit_value = prompt_clip.eval([prompt_text_list[0], prompt_image_list[0]])
@@ -168,14 +195,24 @@ def fitness_eval(prompt_zip_np):
 
     return fit_value.item() if isinstance(fit_value, torch.Tensor) else fit_value
 
-ndim_problem = intrinsic_dim_L + intrinsic_dim_V
-pro = {'fitness_function': fitness_eval, 'ndim_problem': ndim_problem}
+ndim_problem = 0
+if intrinsic_dim_L > 0:
+    ndim_problem += intrinsic_dim_L
+if intrinsic_dim_V > 0:
+    ndim_problem += intrinsic_dim_V
+
+if ndim_problem == 0 and args.opt != "shallow_cma":
+    logger.info("No prompts to tune (all dimensions are 0). Skipping optimization loop.")
+    pro = {'fitness_function': fitness_eval, 'ndim_problem': 1}
+else:
+    pro = {'fitness_function': fitness_eval, 'ndim_problem': ndim_problem}
+
 
 opt_cfg = {
     'fitness_threshold': 1e-10,
     'seed_rng': cfg.get('seed', 0),
     'budget': cfg.get('budget', 25200),
-    'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))),
+    'x': cfg.get('initial_mean', 0 * np.ones((ndim_problem,))) if ndim_problem > 0 else np.array([]),
     'sigma': cfg['sigma'],
     'verbose_frequency': cfg.get('verbose_frequency', 5),
     'n_individuals': cfg["popsize"],
@@ -230,59 +267,63 @@ if args.noise_type_text != 'none' or args.noise_type_visual != 'none':
 
 start_time = time.time()
 logger.info("--- Starting Optimization Loop ---")
-
-if args.opt in __pypop__:
-    if args.task_name in __classification__:
-        logger.info("Setting up text and image context for PyPop optimizer.")
-        text_context = prompt_clip.get_text_information()
-        image_context = prompt_clip.get_image_information()
-        prompt_clip.text_encoder.set_context(text_context)
-        prompt_clip.image_encoder.set_context(image_context)
-        res = opt.optimize()
-        logger.info(f"Optimization Result (PyPop): {res}")
-    else:
-        logger.warning(f"PyPop optimizer path not fully defined for task {args.task_name}")
-
+if ndim_problem == 0:
+    logger.info("Skipping optimization loop as ndim_problem is 0.")
+    prompt_clip.best_prompt_text = None
+    prompt_clip.best_prompt_image = None
 else:
-    if args.task_name in __classification__:
-        logger.info("Setting up text and image context for non-PyPop optimizer.")
-        text_context = prompt_clip.get_text_information()
-        image_context = prompt_clip.get_image_information()
-        prompt_clip.text_encoder.set_context(text_context)
-        prompt_clip.image_encoder.set_context(image_context)
-
-        while not opt.stop():
-            solutions = opt.ask()
-
-            prompt_text_list = prompt_clip.generate_text_prompts([x[:intrinsic_dim_L] for x in solutions])
-            prompt_image_list = prompt_clip.generate_visual_prompts([x[intrinsic_dim_L:] for x in solutions])
-
-            if cfg["parallel"]:
-                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = True
-                fitnesses = prompt_clip.eval([prompt_text_list, prompt_image_list])
-                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
-                logger.info(f"Evaluated Parallel Pop (call {prompt_clip.num_call})")
-
-            else:
-                prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
-                fitnesses = []
-                for i, p_zip in enumerate(tqdm(zip(prompt_text_list, prompt_image_list), total=len(solutions), ncols=80, desc="Eval Sequential Pop")):
-                     fit = prompt_clip.eval(p_zip)
-                     fitnesses.append(fit.item() if isinstance(fit, torch.Tensor) else fit)
-                logger.info(f"Evaluated Sequential Pop (call {prompt_clip.num_call})")
-
-            opt.tell(solutions, fitnesses)
-
-            # Logging of best objective value every N generations (controlled by verbose_frequency in YAML)
-            # This is independent of the testing frequency.
-            if prompt_clip.num_call % (cfg["popsize"] * opt_cfg['verbose_frequency']) == 0:
-                 log_loss_label = "Maximized Loss" if prompt_clip.maximize_loss else "Minimized Loss"
-                 
-                 # The detailed test accuracy log is now inside prompt_clip.eval(), so we only log the objective here
-                 logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}): {prompt_clip.best_objective_loss_value:.4f}")
+    if args.opt in __pypop__:
+        if args.task_name in __classification__:
+            logger.info("Setting up text and image context for PyPop optimizer.")
+            text_context = prompt_clip.get_text_information()
+            image_context = prompt_clip.get_image_information()
+            prompt_clip.text_encoder.set_context(text_context)
+            prompt_clip.image_encoder.set_context(image_context)
+            res = opt.optimize()
+            logger.info(f"Optimization Result (PyPop): {res}")
+        else:
+            logger.warning(f"PyPop optimizer path not fully defined for task {args.task_name}")
 
     else:
-        logger.warning(f"Non-PyPop optimizer path not fully defined for task {args.task_name}")
+        if args.task_name in __classification__:
+            logger.info("Setting up text and image context for non-PyPop optimizer.")
+            text_context = prompt_clip.get_text_information()
+            image_context = prompt_clip.get_image_information()
+            prompt_clip.text_encoder.set_context(text_context)
+            prompt_clip.image_encoder.set_context(image_context)
+
+            while not opt.stop():
+                solutions = opt.ask()
+
+                prompt_text_list = prompt_clip.generate_text_prompts([x[:intrinsic_dim_L] for x in solutions])
+                prompt_image_list = prompt_clip.generate_visual_prompts([x[intrinsic_dim_L:] for x in solutions])
+
+                if cfg["parallel"]:
+                    prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = True
+                    fitnesses = prompt_clip.eval([prompt_text_list, prompt_image_list])
+                    prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
+                    logger.info(f"Evaluated Parallel Pop (call {prompt_clip.num_call})")
+
+                else:
+                    prompt_clip.parallel = prompt_clip.text_encoder.parallel = prompt_clip.image_encoder.parallel = False
+                    fitnesses = []
+                    for i, p_zip in enumerate(tqdm(zip(prompt_text_list, prompt_image_list), total=len(solutions), ncols=80, desc="Eval Sequential Pop")):
+                        fit = prompt_clip.eval(p_zip)
+                        fitnesses.append(fit.item() if isinstance(fit, torch.Tensor) else fit)
+                    logger.info(f"Evaluated Sequential Pop (call {prompt_clip.num_call})")
+
+                opt.tell(solutions, fitnesses)
+
+                # Logging of best objective value every N generations (controlled by verbose_frequency in YAML)
+                # This is independent of the testing frequency.
+                if prompt_clip.num_call % (cfg["popsize"] * opt_cfg['verbose_frequency']) == 0:
+                    log_loss_label = "Maximized Loss" if prompt_clip.maximize_loss else "Minimized Loss"
+                    
+                    # The detailed test accuracy log is now inside prompt_clip.eval(), so we only log the objective here
+                    logger.info(f"Generation ~{int(prompt_clip.num_call / cfg['popsize'])}, Best Objective ({log_loss_label}): {prompt_clip.best_objective_loss_value:.4f}")
+
+        else:
+            logger.warning(f"Non-PyPop optimizer path not fully defined for task {args.task_name}")
 
 logger.info("\n--- Optimization Finished ---")
 end_time = time.time()

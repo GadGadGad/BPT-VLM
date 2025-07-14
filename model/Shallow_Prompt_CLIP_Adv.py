@@ -69,29 +69,35 @@ class PromptCLIP_Shallow:
         self.sigma = cfg["sigma"]
         
         # Language Linear Layer
-        self.linear_L = torch.nn.Linear(self.intrinsic_dim_L, self.n_prompt_tokens_L * self.ctx_dim_L,
-                                      bias=False,device=self.device,dtype=self.dtype)
-        embedding = self.model.token_embedding.weight.cpu()
-        mu_hat = np.mean(embedding.reshape(-1).detach().cpu().numpy())
-        std_hat = np.std(embedding.reshape(-1).detach().cpu().numpy())
-        mu = 0.0
-        std = std_hat / (np.sqrt(self.intrinsic_dim_L) * self.sigma)
-        logger.info('[Embedding] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
-        for p in self.linear_L.parameters():
-            torch.nn.init.normal_(p, mu, std)
-        # Vision Linear Layer
-        self.linear_V = torch.nn.Linear(self.intrinsic_dim_V, self.n_prompt_tokens_V * self.ctx_dim_V,
-                                        bias=False, device=self.device, dtype=self.dtype)
-        conv = self.model.visual.conv1.weight.cpu()
-        mu_hat = np.mean(conv.reshape(-1).detach().cpu().numpy())
-        std_hat = np.std(conv.reshape(-1).detach().cpu().numpy())
-        mu = mu_hat*3072/self.intrinsic_dim_V
-        std = std_hat * np.sqrt(3072/self.intrinsic_dim_V) * self.sigma
-        logger.info('[Conv] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
-        for p in self.linear_V.parameters():
-            torch.nn.init.normal_(p, mu, std)
+        self.linear_L = None
+        if self.n_prompt_tokens_L > 0 and self.intrinsic_dim_L > 0:
+            self.linear_L = torch.nn.Linear(self.intrinsic_dim_L, self.n_prompt_tokens_L * self.ctx_dim_L,
+                                          bias=False,device=self.device,dtype=self.dtype)
+            embedding = self.model.token_embedding.weight.cpu()
+            mu_hat = np.mean(embedding.reshape(-1).detach().cpu().numpy())
+            std_hat = np.std(embedding.reshape(-1).detach().cpu().numpy())
+            mu = 0.0
+            std = std_hat / (np.sqrt(self.intrinsic_dim_L) * self.sigma)
+            logger.info('[Embedding] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
+            for p in self.linear_L.parameters():
+                torch.nn.init.normal_(p, mu, std)
+        else:
+            logger.info("Text prompt tuning disabled (n_prompt_tokens_L or intrinsic_dim_L is 0).")
 
-        # --- END OF REORDERED BLOCK ---
+        self.linear_V = None
+        if self.n_prompt_tokens_V > 0 and self.intrinsic_dim_V > 0:
+            self.linear_V = torch.nn.Linear(self.intrinsic_dim_V, self.n_prompt_tokens_V * self.ctx_dim_V,
+                                            bias=False, device=self.device, dtype=self.dtype)
+            conv = self.model.visual.conv1.weight.cpu()
+            mu_hat = np.mean(conv.reshape(-1).detach().cpu().numpy())
+            std_hat = np.std(conv.reshape(-1).detach().cpu().numpy())
+            mu = mu_hat*3072/self.intrinsic_dim_V
+            std = std_hat * np.sqrt(3072/self.intrinsic_dim_V) * self.sigma
+            logger.info('[Conv] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
+            for p in self.linear_V.parameters():
+                torch.nn.init.normal_(p, mu, std)
+        else:
+            logger.info("Visual prompt tuning disabled (n_prompt_tokens_V or intrinsic_dim_V is 0).")
         
         # Now, it is safe to load the dataset, as it has access to all required model components.
         self.load_dataset()
@@ -303,6 +309,8 @@ class PromptCLIP_Shallow:
 
     def generate_text_prompts(self,intrinsic_vectors):
         prompt_list = []
+        if self.linear_L is None:
+            return [None] * len(intrinsic_vectors)
         for vector in intrinsic_vectors:
             z = torch.tensor(vector, device=self.device, dtype=self.dtype)
             z = self.linear_L(z).reshape(self.n_prompt_tokens_L, self.ctx_dim_L)
@@ -318,6 +326,8 @@ class PromptCLIP_Shallow:
 
     def generate_visual_prompts(self,intrinsic_vectors):
         visual_prompt_list = []
+        if self.linear_V is None:
+            return [None] * len(intrinsic_vectors)
         for vector in intrinsic_vectors:
             z = torch.tensor(vector,device=self.device,dtype=self.dtype)
             z = self.linear_V(z).reshape(self.n_prompt_tokens_V, self.ctx_dim_V)
@@ -351,16 +361,24 @@ class PromptCLIP_Shallow:
         if self.parallel: # optimizer is evaluating a whole population
             loss_accumulator = [0.0] * self.popsize
             all_pop_text_features = []
-            for p_text in prompt_text_list_or_tensor:
-                features = self.text_encoder(p_text)
-                features = features / features.norm(dim=-1, keepdim=True)
-                all_pop_text_features.append(features)
-            pop_txt_features = torch.stack(all_pop_text_features) # [pop_size, n_cls, D]
+            # prompt_text_list_or_tensor is a list of tensors or a list of Nones
+            if prompt_text_list_or_tensor[0] is not None:
+                for p_text in prompt_text_list_or_tensor:
+                    features = self.text_encoder(p_text)
+                    features = features / features.norm(dim=-1, keepdim=True)
+                    all_pop_text_features.append(features)
+                pop_txt_features = torch.stack(all_pop_text_features) # [pop_size, n_cls, D]
+            else:
+                # If text prompts are disabled, get base text features once and repeat
+                base_text_features = self.text_encoder(None)
+                base_text_features = base_text_features / base_text_features.norm(dim=-1, keepdim=True)
+                pop_txt_features = base_text_features.unsqueeze(0).repeat(self.popsize, 1, 1)
+
         else: # optimizer is evaluating a single candidate
+            # Pass either the tensor or None to the encoder
             text_features = self.text_encoder(prompt_text_list_or_tensor)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-
-
+            
         for batch_idx, batch in enumerate(self.train_loader):
             # `clean_image_orig` is [B_orig, C, H, W], `label_orig` is [B_orig]
             clean_image, label = self.parse_batch(batch)
@@ -544,7 +562,13 @@ class PromptCLIP_Shallow:
         return acc
 
     @torch.no_grad()
-    def test(self, use_clean_loader=False): # --- NEW: argument to select loader ---
+    def test(self, use_clean_loader=False):
+        if self.best_prompt_text is None and self.n_prompt_tokens_L > 0:
+             logger.warning("Test skipped for text prompts: no best tuned prompt available for evaluation.")
+             # return torch.tensor(0.0)
+        if self.best_prompt_image is None and self.n_prompt_tokens_V > 0:
+            logger.warning("Test skipped for visual prompts: no best tuned prompt available for evaluation.")
+            # return torch.tensor(0.0)
         if self.best_prompt_text is None or self.best_prompt_image is None:
             logger.warning("Test skipped: no best tuned prompt available for evaluation.")
             return torch.tensor(0.0)
