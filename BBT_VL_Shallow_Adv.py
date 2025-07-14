@@ -103,7 +103,7 @@ else:
     logging.warning(f"Task '{args.task_name}' not found in config. Using default settings.")
 
 # White-box attack configurations removed
-print(cfg)
+
 if args.n_prompt_tokens_L is not None:
     cfg['n_prompt_tokens_L'] = args.n_prompt_tokens_L
 if args.n_prompt_tokens_V is not None:
