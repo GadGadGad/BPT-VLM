@@ -620,15 +620,15 @@ class PromptCLIP_Shallow:
 
 
     def load_dataset(self):
-        # --- MODIFIED: Set up attack configs with separate ratios ---
+        # --- MODIFIED: Set up attack configs with separate parameters ---
         train_attack_cfg = None
         if self.cfg.get("use_attacked_dataset", False) and self.cfg.get("attack_train", False):
             train_attack_cfg = {
                 "model": self,
                 "ratio": self.cfg.get("attack_train_ratio", 0.5),
-                "eps": self.cfg.get("pgd_eps", 8/255.0),
-                "alpha": self.cfg.get("pgd_alpha", 2/255.0),
-                "steps": self.cfg.get("pgd_steps", 10),
+                "eps": self.cfg.get("pgd_eps_train", 8/255.0),
+                "alpha": self.cfg.get("pgd_alpha_train", 2/255.0),
+                "steps": self.cfg.get("pgd_steps_train", 10),
             }
             
         test_attack_cfg = None
@@ -636,10 +636,12 @@ class PromptCLIP_Shallow:
             test_attack_cfg = {
                 "model": self,
                 "ratio": self.cfg.get("attack_test_ratio", 0.5),
-                "eps": self.cfg.get("pgd_eps", 8/255.0),
-                "alpha": self.cfg.get("pgd_alpha", 2/255.0),
-                "steps": self.cfg.get("pgd_steps", 10),
+                "eps": self.cfg.get("pgd_eps_test", 8/255.0),
+                "alpha": self.cfg.get("pgd_alpha_test", 2/255.0),
+                "steps": self.cfg.get("pgd_steps_test", 20),
             }
+        # --- END MODIFIED ---
+
         if test_attack_cfg is not None:
             logger.info("Attack on test set is enabled. Also loading a clean test set for baseline comparison.")
             if self.task_name == 'CIFAR10':

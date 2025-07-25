@@ -47,9 +47,12 @@ attack_group.add_argument("--attack_train_ratio", type=float, default=0.5, help=
 attack_group.add_argument("--attack_test_ratio", type=float, default=0.5, help="Ratio of images to attack in the test set.")
 attack_group.add_argument("--attack_train", action='store_true', help="Apply attack to the training set.")
 attack_group.add_argument("--attack_test", action='store_true', help="Apply attack to the test set.")
-attack_group.add_argument("--pgd_eps", type=float, default=8/255.0, help="PGD attack epsilon.")
-attack_group.add_argument("--pgd_alpha", type=float, default=2/255.0, help="PGD attack alpha (step size).")
-attack_group.add_argument("--pgd_steps", type=int, default=10, help="Number of PGD attack steps.")
+attack_group.add_argument("--pgd_eps_train", type=float, default=8/255.0, help="PGD attack epsilon for training set.")
+attack_group.add_argument("--pgd_alpha_train", type=float, default=2/255.0, help="PGD attack alpha (step size) for training set.")
+attack_group.add_argument("--pgd_steps_train", type=int, default=10, help="Number of PGD attack steps for training set.")
+attack_group.add_argument("--pgd_eps_test", type=float, default=8/255.0, help="PGD attack epsilon for test set.")
+attack_group.add_argument("--pgd_alpha_test", type=float, default=2/255.0, help="PGD attack alpha (step size) for test set.")
+attack_group.add_argument("--pgd_steps_test", type=int, default=20, help="Number of PGD attack steps for test set.")
 # --- END MODIFIED ---
 
 # --- NEW: Noise Injection Arguments ---
@@ -86,9 +89,12 @@ cfg["attack_train_ratio"] = args.attack_train_ratio
 cfg["attack_test_ratio"] = args.attack_test_ratio
 cfg["attack_train"] = args.attack_train
 cfg["attack_test"] = args.attack_test
-cfg["pgd_eps"] = args.pgd_eps
-cfg["pgd_alpha"] = args.pgd_alpha
-cfg["pgd_steps"] = args.pgd_steps
+cfg["pgd_eps_train"] = args.pgd_eps_train
+cfg["pgd_alpha_train"] = args.pgd_alpha_train
+cfg["pgd_steps_train"] = args.pgd_steps_train
+cfg["pgd_eps_test"] = args.pgd_eps_test
+cfg["pgd_alpha_test"] = args.pgd_alpha_test
+cfg["pgd_steps_test"] = args.pgd_steps_test
 cfg["noise_type_text"] = args.noise_type_text
 cfg["noise_type_visual"] = args.noise_type_visual
 cfg["noise_level"] = args.noise_level
@@ -256,8 +262,11 @@ logger.info(f"Budget: {opt_cfg['budget']}")
 if args.use_attacked_dataset:
     logger.info("--- Using Pre-Attacked PGD Dataset for Tuning/Testing ---")
     logger.info(f"Attack on TRAIN set: {args.attack_train} (Ratio: {args.attack_train_ratio})")
+    if args.attack_train:
+        logger.info(f"  -> PGD Params (Train): Epsilon={args.pgd_eps_train}, Alpha={args.pgd_alpha_train}, Steps={args.pgd_steps_train}")
     logger.info(f"Attack on TEST set: {args.attack_test} (Ratio: {args.attack_test_ratio})")
-    logger.info(f"PGD Params - Epsilon: {args.pgd_eps}, Alpha: {args.pgd_alpha}, Steps: {args.pgd_steps}")
+    if args.attack_test:
+        logger.info(f"  -> PGD Params (Test): Epsilon={args.pgd_eps_test}, Alpha={args.pgd_alpha_test}, Steps={args.pgd_steps_test}")
 
 if args.noise_type_text != 'none' or args.noise_type_visual != 'none':
     logger.info("--- Noise Injection Enabled During Tuning ---")
