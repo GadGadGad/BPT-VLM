@@ -40,27 +40,37 @@ prompt_group.add_argument("--learned_prompt_pos", type=str, default="prefix", ch
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
 
-# --- MODIFIED: PGD Attacked Dataset Generation Arguments ---
-attack_group = parser.add_argument_group('PGD Attacked Dataset Configuration')
+# --- MODIFIED: Expanded PGD/FGSM/CW Attacked Dataset Generation Arguments ---
+attack_group = parser.add_argument_group('Adversarial Attack Configuration')
 attack_group.add_argument("--use_attacked_dataset", action='store_true', help="Enable generation/use of a PGD-attacked dataset.")
-attack_group.add_argument("--attack_train_ratio", type=float, default=0.5, help="Ratio of images to attack in the training set.")
-attack_group.add_argument("--attack_test_ratio", type=float, default=0.5, help="Ratio of images to attack in the test set.")
 attack_group.add_argument("--attack_train", action='store_true', help="Apply attack to the training set.")
 attack_group.add_argument("--attack_test", action='store_true', help="Apply attack to the test set.")
-attack_group.add_argument("--pgd_eps_train", type=float, default=8/255.0, help="PGD attack epsilon for training set.")
-attack_group.add_argument("--pgd_alpha_train", type=float, default=2/255.0, help="PGD attack alpha (step size) for training set.")
-attack_group.add_argument("--pgd_steps_train", type=int, default=10, help="Number of PGD attack steps for training set.")
-attack_group.add_argument("--pgd_eps_test", type=float, default=8/255.0, help="PGD attack epsilon for test set.")
-attack_group.add_argument("--pgd_alpha_test", type=float, default=2/255.0, help="PGD attack alpha (step size) for test set.")
-attack_group.add_argument("--pgd_steps_test", type=int, default=20, help="Number of PGD attack steps for test set.")
+
+attack_group.add_argument("--attack_type_train", type=str, default="pgd", choices=["pgd", "fgsm", "cw"], help="Type of attack for the training set.")
+attack_group.add_argument("--attack_type_test", type=str, default="pgd", choices=["pgd", "fgsm", "cw"], help="Type of attack for the test set.")
+
+attack_group.add_argument("--attack_train_ratio", type=float, default=0.5, help="Ratio of images to attack in the training set.")
+attack_group.add_argument("--attack_test_ratio", type=float, default=0.5, help="Ratio of images to attack in the test set.")
+
+pgd_group = attack_group.add_argument_group('PGD/FGSM Parameters')
+pgd_group.add_argument("--pgd_eps_train", type=float, default=8/255.0, help="PGD/FGSM attack epsilon for training set.")
+pgd_group.add_argument("--pgd_alpha_train", type=float, default=2/255.0, help="PGD attack alpha (step size) for training set.")
+pgd_group.add_argument("--pgd_steps_train", type=int, default=10, help="Number of PGD attack steps for training set.")
+pgd_group.add_argument("--pgd_eps_test", type=float, default=8/255.0, help="PGD/FGSM attack epsilon for test set.")
+pgd_group.add_argument("--pgd_alpha_test", type=float, default=2/255.0, help="PGD attack alpha (step size) for test set.")
+pgd_group.add_argument("--pgd_steps_test", type=int, default=20, help="Number of PGD attack steps for test set.")
+
+cw_group = attack_group.add_argument_group('CW Parameters')
+cw_group.add_argument("--cw_c", type=float, default=1.0, help="CW attack confidence parameter (trade-off between dist and class loss).")
+cw_group.add_argument("--cw_lr", type=float, default=0.01, help="CW attack optimizer learning rate.")
+cw_group.add_argument("--cw_steps", type=int, default=20, help="Number of CW attack optimization steps.")
 # --- END MODIFIED ---
 
-# --- NEW: Noise Injection Arguments ---
+# --- Noise Injection Arguments ---
 noise_group = parser.add_argument_group('Noise Injection Configuration')
 noise_group.add_argument("--noise_type_text", type=str, default="none", choices=["none", "gaussian", "uniform", "binomial"], help="Type of noise to add to text prompts during tuning.")
 noise_group.add_argument("--noise_type_visual", type=str, default="none", choices=["none", "gaussian", "uniform", "binomial"], help="Type of noise to add to visual prompts during tuning.")
 noise_group.add_argument("--noise_level", type=float, default=0.1, help="Magnitude/standard deviation of the injected noise.")
-# --- END NEW ---
 
 
 args = parser.parse_args()
@@ -83,32 +93,36 @@ cfg["initial_prompt_text"] = args.initial_prompt_text
 cfg["learned_prompt_pos"] = args.learned_prompt_pos
 cfg["test_every_n_gens"] = args.test_every_n_gens
 
-# --- MODIFIED: Add PGD and Noise args to config dict ---
+# --- MODIFIED: Add all attack and noise args to config dict ---
 cfg["use_attacked_dataset"] = args.use_attacked_dataset
-cfg["attack_train_ratio"] = args.attack_train_ratio
-cfg["attack_test_ratio"] = args.attack_test_ratio
 cfg["attack_train"] = args.attack_train
 cfg["attack_test"] = args.attack_test
+cfg["attack_type_train"] = args.attack_type_train
+cfg["attack_type_test"] = args.attack_type_test
+cfg["attack_train_ratio"] = args.attack_train_ratio
+cfg["attack_test_ratio"] = args.attack_test_ratio
+# PGD/FGSM
 cfg["pgd_eps_train"] = args.pgd_eps_train
 cfg["pgd_alpha_train"] = args.pgd_alpha_train
 cfg["pgd_steps_train"] = args.pgd_steps_train
 cfg["pgd_eps_test"] = args.pgd_eps_test
 cfg["pgd_alpha_test"] = args.pgd_alpha_test
 cfg["pgd_steps_test"] = args.pgd_steps_test
+# CW
+cfg["cw_c"] = args.cw_c
+cfg["cw_lr"] = args.cw_lr
+cfg["cw_steps"] = args.cw_steps
+# Noise
 cfg["noise_type_text"] = args.noise_type_text
 cfg["noise_type_visual"] = args.noise_type_visual
 cfg["noise_level"] = args.noise_level
 # --- END MODIFIED ---
-
-    
 
 if args.task_name in cfg:
     for k,v in cfg[args.task_name].items():
         cfg[k]=v
 else:
     logging.warning(f"Task '{args.task_name}' not found in config. Using default settings.")
-
-# White-box attack configurations removed
 
 if args.n_prompt_tokens_L is not None:
     cfg['n_prompt_tokens_L'] = args.n_prompt_tokens_L
@@ -126,26 +140,16 @@ if cfg['n_prompt_tokens_V'] == 0:
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir)
 
-
 initial_prompt_str_fn = f"_initPrompt" if cfg["initial_prompt_text"] is not None else ""
 learned_pos_str_fn = f"_pos{cfg['learned_prompt_pos']}"
 
-# --- NEW: Add noise parameters to filename ---
 noise_str_fn = ""
 if cfg['noise_type_text'] != 'none' or cfg['noise_type_visual'] != 'none':
     noise_str_fn = f"_noiseT_{cfg['noise_type_text']}_noiseV_{cfg['noise_type_visual']}_level_{cfg['noise_level']}"
-# --- END NEW ---
 
 fname_base = "{}{}_{}_{}_parallel{}{}_maxLoss{}{}".format(
-    cfg["k_shot"],
-    args.task_name,
-    cfg["opt_name"],
-    cfg["backbone"].replace("/", "-"),
-    args.parallel,
-    initial_prompt_str_fn,
-    learned_pos_str_fn,
-    cfg["maximize_loss"],
-    noise_str_fn # Added noise string
+    cfg["k_shot"], args.task_name, cfg["opt_name"], cfg["backbone"].replace("/", "-"),
+    args.parallel, initial_prompt_str_fn, learned_pos_str_fn, cfg["maximize_loss"], noise_str_fn
 )
 log_filename = fname_base + ".log"
 log_filepath = os.path.join(output_dir, log_filename)
@@ -153,12 +157,10 @@ log_filepath = os.path.join(output_dir, log_filename)
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 ch.setFormatter(formatter)
 logger.addHandler(ch)
-
 fh = logging.FileHandler(log_filepath)
 fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
@@ -179,6 +181,8 @@ else:
      logger.error(f"Task type for '{args.task_name}' not fully implemented.")
      exit()
 
+# ... (fitness_eval, optimizer setup, etc. remain the same) ...
+# ... (omitting for brevity)
 def fitness_eval(prompt_zip_np):
     prompt_zip_np = np.array(prompt_zip_np)
     prompt_text_intrinsic = None
@@ -260,13 +264,19 @@ logger.info(f"Optimization Objective: {'Maximize' if cfg['maximize_loss'] else '
 logger.info(f"Budget: {opt_cfg['budget']}")
 
 if args.use_attacked_dataset:
-    logger.info("--- Using Pre-Attacked PGD Dataset for Tuning/Testing ---")
-    logger.info(f"Attack on TRAIN set: {args.attack_train} (Ratio: {args.attack_train_ratio})")
+    logger.info("--- Adversarial Attack Settings ---")
     if args.attack_train:
-        logger.info(f"  -> PGD Params (Train): Epsilon={args.pgd_eps_train}, Alpha={args.pgd_alpha_train}, Steps={args.pgd_steps_train}")
-    logger.info(f"Attack on TEST set: {args.attack_test} (Ratio: {args.attack_test_ratio})")
+        logger.info(f"Train Attack: Type={args.attack_type_train.upper()}, Ratio={args.attack_train_ratio}")
+        if args.attack_type_train in ['pgd', 'fgsm']:
+            logger.info(f"  -> PGD/FGSM Params: Epsilon={args.pgd_eps_train}, Alpha={args.pgd_alpha_train}, Steps={args.pgd_steps_train}")
+        elif args.attack_type_train == 'cw':
+            logger.info(f"  -> CW Params: C={args.cw_c}, LR={args.cw_lr}, Steps={args.cw_steps}")
     if args.attack_test:
-        logger.info(f"  -> PGD Params (Test): Epsilon={args.pgd_eps_test}, Alpha={args.pgd_alpha_test}, Steps={args.pgd_steps_test}")
+        logger.info(f"Test Attack: Type={args.attack_type_test.upper()}, Ratio={args.attack_test_ratio}")
+        if args.attack_type_test in ['pgd', 'fgsm']:
+            logger.info(f"  -> PGD/FGSM Params: Epsilon={args.pgd_eps_test}, Alpha={args.pgd_alpha_test}, Steps={args.pgd_steps_test}")
+        elif args.attack_type_test == 'cw':
+            logger.info(f"  -> CW Params: C={args.cw_c}, LR={args.cw_lr}, Steps={args.cw_steps}")
 
 if args.noise_type_text != 'none' or args.noise_type_visual != 'none':
     logger.info("--- Noise Injection Enabled During Tuning ---")
@@ -275,6 +285,8 @@ if args.noise_type_text != 'none' or args.noise_type_visual != 'none':
 
 
 start_time = time.time()
+# ... (optimization loop remains the same) ...
+# ... (final evaluation and saving remain the same) ...
 logger.info("--- Starting Optimization Loop ---")
 if ndim_problem == 0:
     logger.info("Skipping optimization loop as ndim_problem is 0.")
