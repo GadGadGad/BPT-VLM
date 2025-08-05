@@ -307,68 +307,44 @@ class PromptCLIP_Shallow:
 
     def get_text_information(self,caption=None):
         prompt_prefix_placeholder = " ".join(["X"] * self.n_prompt_tokens_L)
-
         if caption is None:
             classnames = [name.replace("_", " ").replace("-", " ") for name in self.classes]
             pattern_prompts = []
-
             for name in classnames:
                 initial_prompt = self.initial_prompt_text if self.initial_prompt_text else ""
-                
-                # Build the prompt string based on the learned prompt's position
                 if self.learned_prompt_pos == "prefix":
-                    # [Learned] [Initial] [Class]
                     template = f"{prompt_prefix_placeholder} {initial_prompt} {name}."
                 elif self.learned_prompt_pos == "middle":
-                    # [Initial] [Learned] [Class]
                     template = f"{initial_prompt} {prompt_prefix_placeholder} {name}."
                 elif self.learned_prompt_pos == "suffix":
-                    # [Initial] [Class] [Learned]
                     template = f"{initial_prompt} {name} {prompt_prefix_placeholder}."
                 else: # Default to prefix
                     template = f"{prompt_prefix_placeholder} {initial_prompt} {name}."
-
-                # Clean up extra spaces that might result from an empty initial_prompt
                 pattern_prompts.append(" ".join(template.split()))
 
             tokenized_pattern_prompts = torch.cat([clip.tokenize(p) for p in pattern_prompts]).to(self.device)
-            
-            # Find the start index of the context tokens (the "X"s)
-            # This is crucial for the generalized `incorporate_prompt`
-            x_token_id = clip.tokenize("X")[0, 1].item() # The token id for a single "X"
-            # Find the first column where an "X" token appears. This is our start index.
+            x_token_id = clip.tokenize("X")[0, 1].item()
             ctx_start_idx = (tokenized_pattern_prompts == x_token_id).nonzero(as_tuple=True)[1].min().item()
-
             with torch.no_grad():
                 init_pattern_embedding = self.model.token_embedding(tokenized_pattern_prompts).type(self.dtype)
-            
             context = {
-                "n_cls": self.n_cls, 
-                "n_prompt_tokens_L": self.n_prompt_tokens_L,
-                "init_pattern_embedding": init_pattern_embedding, 
-                "tokenized_pattern_prompts": tokenized_pattern_prompts,
-                "ctx_start_idx": ctx_start_idx,  # Pass the start index to the encoder
-                "batch_size": self.batch_size,
-                "pop_size": self.popsize,
-                "parallel": self.parallel
+                "n_cls": self.n_cls, "n_prompt_tokens_L": self.n_prompt_tokens_L,
+                "init_pattern_embedding": init_pattern_embedding, "tokenized_pattern_prompts": tokenized_pattern_prompts,
+                "ctx_start_idx": ctx_start_idx, "batch_size": self.batch_size, "pop_size": self.popsize, "parallel": self.parallel
             }
-        else: # Logic for a single caption (e.g., for other tasks), kept simpler
+        else: # Logic for a single caption
             pattern_prompt = prompt_prefix_placeholder + " " + caption + "."
             tokenized_pattern_prompts = torch.cat([clip.tokenize(pattern_prompt)]).to(self.device)
-            ctx_start_idx = 1 # Assuming it's always at the start for this simple case
+            ctx_start_idx = 1
             with torch.no_grad():
                 init_pattern_embedding = self.model.token_embedding(tokenized_pattern_prompts).type(self.dtype)
             context = {
-                "n_cls": 1,
-                "n_prompt_tokens_L": self.n_prompt_tokens_L,
-                "init_pattern_embedding": init_pattern_embedding, 
-                "tokenized_pattern_prompts": tokenized_pattern_prompts,
-                "ctx_start_idx": ctx_start_idx,
-                "batch_size": self.batch_size,
-                "pop_size": self.popsize,
-                "parallel": self.parallel
+                "n_cls": 1, "n_prompt_tokens_L": self.n_prompt_tokens_L,
+                "init_pattern_embedding": init_pattern_embedding, "tokenized_pattern_prompts": tokenized_pattern_prompts,
+                "ctx_start_idx": ctx_start_idx, "batch_size": self.batch_size, "pop_size": self.popsize, "parallel": self.parallel
             }
         return context
+
     @torch.no_grad()
     def get_original_text_features(self, specific_prompt_text=None):
         if specific_prompt_text is not None:
