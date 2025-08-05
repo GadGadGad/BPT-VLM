@@ -14,7 +14,7 @@ import logging
 logger= logging.getLogger(__name__)
 
 class PromptCLIP_Shallow:
-    def __init__(self,task_name,cfg):
+    def __init__(self, task_name, cfg, surrogate_clip_model=None, surrogate_preprocess=None):
         self.task_name = task_name
         self.opt_name = cfg["opt_name"]
         self.data_dir = cfg["data_dir"]
@@ -32,6 +32,12 @@ class PromptCLIP_Shallow:
         self.num_call = 0
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load(self.backbone,device=self.device)
+        self.surrogate_clip_model = surrogate_clip_model
+        self.surrogate_preprocess = surrogate_preprocess
+        if self.surrogate_clip_model is None:
+            # If no surrogate is provided, it defaults to the main model
+            self.surrogate_clip_model = self.model
+            self.surrogate_preprocess = self.preprocess
         self.loss = []
         self.acc = []
         self.acc_clean_during_attack_run = []
@@ -120,128 +126,69 @@ class PromptCLIP_Shallow:
         self.best_accuracy = 0.0
         self.best_accuracy_attack = 0.0 
         self.best_train_accuracy = 0.0
+        
+    @torch.no_grad()
+    def get_surrogate_text_features(self, prompt_template):
+        """Generates text features using the surrogate model and a given prompt template."""
+        classnames = [name.replace("_", " ").replace("-", " ") for name in self.classes]
+        prompts = [prompt_template.format(name) for name in classnames]
+        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts]).to(self.device)
+        
+        # Use the surrogate model to encode text
+        text_features = self.surrogate_clip_model.encode_text(tokenized_prompts).type(self.dtype)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        return text_features
 
-    # --- NEW: Attack Dispatcher ---
     def perform_attack_on_batch(self, images, labels, attack_params):
-        """Public-facing dispatcher to run the configured attack."""
+        """Public-facing dispatcher to run the configured attack using the surrogate model."""
         attack_type = attack_params.get("type", "pgd")
+
+        surrogate_clip_model = attack_params['surrogate_clip_model']
+        prompt_template = attack_params['surrogate_prompt_text']
+        surrogate_text_features = self.get_surrogate_text_features(prompt_template)
+
         if attack_type == "pgd":
             return self._perform_pgd_attack(images, labels, 
                                             eps=attack_params["eps"], 
                                             alpha=attack_params["alpha"], 
-                                            steps=attack_params["steps"])
+                                            steps=attack_params["steps"],
+                                            surrogate_clip_model=surrogate_clip_model,
+                                            surrogate_text_features=surrogate_text_features)
         elif attack_type == "fgsm":
             return self._perform_fgsm_attack(images, labels, 
-                                             eps=attack_params["eps"])
+                                             eps=attack_params["eps"],
+                                             surrogate_clip_model=surrogate_clip_model,
+                                             surrogate_text_features=surrogate_text_features)
         elif attack_type == "cw":
             return self._perform_cw_attack(images, labels, 
                                            c=attack_params["c"], 
                                            lr=attack_params["lr"], 
-                                           steps=attack_params["steps"])
+                                           steps=attack_params["steps"],
+                                           surrogate_clip_model=surrogate_clip_model,
+                                           surrogate_text_features=surrogate_text_features)
         else:
             logger.warning(f"Unknown attack type '{attack_type}'. Returning original images.")
             return images
 
     @torch.enable_grad()
-    def _perform_fgsm_attack(self, images, labels, eps):
-        """ Performs FGSM attack on a batch of images. """
+    def _perform_pgd_attack(self, images, labels, eps, alpha, steps,
+                            surrogate_clip_model, surrogate_text_features):
+        """ Performs PGD attack on a batch of images using a specified SURROGATE model. """
         images_orig = images.clone().detach()
         images_adv = images.clone().detach().requires_grad_(True)
         
-        vanilla_text_features = self.get_original_text_features()
-
-        # Single gradient step
-        original_parallel = self.image_encoder.parallel
-        self.image_encoder.parallel = False
-        image_features = self.image_encoder(images_adv.to(self.dtype), prompt=None)
-        self.image_encoder.parallel = original_parallel
-        
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        logits = self.logit_scale.exp() * image_features @ vanilla_text_features.t()
-        loss = F.cross_entropy(logits, labels)
-        
-        self.model.zero_grad()
-        loss.backward()
-        
-        with torch.no_grad():
-            grad = images_adv.grad.sign()
-            images_adv.data = images_adv.data + eps * grad
-            # Project back to eps-ball (equivalent to clamp for single step)
-            delta = torch.clamp(images_adv.data - images_orig, min=-eps, max=eps)
-            images_adv.data = torch.clamp(images_orig + delta, min=0, max=1)
-        
-        return images_adv.detach()
-
-    @torch.enable_grad()
-    def _perform_cw_attack(self, images, labels, c, lr, steps):
-        """ Performs Carlini & Wagner L2 attack on a batch of images. """
-        images_orig = images.clone().detach()
-        
-        # Transform images to arctanh space for unconstrained optimization
-        w = torch.atanh((images_orig * 2) - 1).detach().requires_grad_(True)
-        optimizer = torch.optim.Adam([w], lr=lr)
-        vanilla_text_features = self.get_original_text_features()
+        surrogate_vision_encoder = VisionEncoder(surrogate_clip_model)
+        surrogate_vision_encoder.set_context({"n_prompt_tokens_V": 0, "batch_size": 0, "parallel": False, "pop_size": 0})
 
         for _ in range(steps):
-            # Transform back to image space [0, 1]
-            images_adv = 0.5 * (torch.tanh(w) + 1)
-            
-            # Forward pass
-            original_parallel = self.image_encoder.parallel
-            self.image_encoder.parallel = False
-            image_features = self.image_encoder(images_adv.to(self.dtype), prompt=None)
-            self.image_encoder.parallel = original_parallel
-
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            logits = self.logit_scale.exp() * image_features @ vanilla_text_features.t()
-
-            # CW loss calculation (untargeted)
-            true_class_logits = logits.gather(1, labels.unsqueeze(1)).squeeze(1)
-            
-            # Find max logit of other classes
-            other_logits = logits.clone()
-            other_logits.scatter_(1, labels.unsqueeze(1), -float('inf'))
-            max_other_logits = other_logits.max(1)[0]
-            
-            # Loss to encourage misclassification
-            # We want to minimize (true_class_logit - max_other_logit)
-            # The clamp ensures we only penalize when the prediction is correct or not confidently incorrect
-            class_loss = torch.clamp(true_class_logits - max_other_logits, min=-c).sum()
-            
-            # L2 distortion loss
-            dist_loss = torch.sum((images_adv - images_orig) ** 2)
-            
-            # Total loss
-            loss = dist_loss + c * class_loss
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-        # Final adversarial image
-        images_adv_final = (0.5 * (torch.tanh(w) + 1)).detach()
-        return torch.clamp(images_adv_final, min=0, max=1)
-
-
-    @torch.enable_grad()
-    def _perform_pgd_attack(self, images, labels, eps, alpha, steps):
-        """ Performs PGD attack on a batch of images. """
-        images_orig = images.clone().detach()
-        images_adv = images.clone().detach().requires_grad_(True)
-        
-        vanilla_text_features = self.get_original_text_features()
-
-        for _ in range(steps):
-            original_parallel = self.image_encoder.parallel
-            self.image_encoder.parallel = False
-            image_features = self.image_encoder(images_adv.to(self.dtype), prompt=None)
-            self.image_encoder.parallel = original_parallel
+            # The forward pass for gradient calculation MUST use the surrogate model
+            image_features = surrogate_vision_encoder(images_adv.to(self.dtype), prompt=None)
             
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            logits = self.logit_scale.exp() * image_features @ vanilla_text_features.t()
+            logits = surrogate_clip_model.logit_scale.exp() * image_features @ surrogate_text_features.t()
             loss = F.cross_entropy(logits, labels)
             
-            self.model.zero_grad()
+            surrogate_clip_model.zero_grad()
             loss.backward()
             
             with torch.no_grad():
@@ -253,9 +200,65 @@ class PromptCLIP_Shallow:
             images_adv.grad.zero_()
         
         return images_adv.detach()
-    
-    # ... (rest of the class methods: _capture_training_dataset, get_text_information, etc. remain the same) ...
-    # ... (omitting for brevity, no changes needed in eval, test, etc.) ...
+
+    @torch.enable_grad()
+    def _perform_fgsm_attack(self, images, labels, eps, surrogate_clip_model, surrogate_text_features):
+        """ Performs FGSM attack on a batch of images using a specified SURROGATE model. """
+        images_orig = images.clone().detach()
+        images_adv = images.clone().detach().requires_grad_(True)
+        
+        surrogate_vision_encoder = VisionEncoder(surrogate_clip_model)
+        surrogate_vision_encoder.set_context({"n_prompt_tokens_V": 0, "batch_size": 0, "parallel": False, "pop_size": 0})
+
+        # Single gradient step
+        image_features = surrogate_vision_encoder(images_adv.to(self.dtype), prompt=None)
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        logits = surrogate_clip_model.logit_scale.exp() * image_features @ surrogate_text_features.t()
+        loss = F.cross_entropy(logits, labels)
+        
+        surrogate_clip_model.zero_grad()
+        loss.backward()
+        
+        with torch.no_grad():
+            grad = images_adv.grad.sign()
+            images_adv.data = images_adv.data + eps * grad
+            delta = torch.clamp(images_adv.data - images_orig, min=-eps, max=eps)
+            images_adv.data = torch.clamp(images_orig + delta, min=0, max=1)
+        
+        return images_adv.detach()
+
+    @torch.enable_grad()
+    def _perform_cw_attack(self, images, labels, c, lr, steps, surrogate_clip_model, surrogate_text_features):
+        """ Performs Carlini & Wagner L2 attack on a batch of images using a specified SURROGATE model. """
+        images_orig = images.clone().detach()
+        w = torch.atanh((images_orig * 2) - 1).detach().requires_grad_(True)
+        optimizer = torch.optim.Adam([w], lr=lr)
+        
+        surrogate_vision_encoder = VisionEncoder(surrogate_clip_model)
+        surrogate_vision_encoder.set_context({"n_prompt_tokens_V": 0, "batch_size": 0, "parallel": False, "pop_size": 0})
+
+        for _ in range(steps):
+            images_adv = 0.5 * (torch.tanh(w) + 1)
+            
+            image_features = surrogate_vision_encoder(images_adv.to(self.dtype), prompt=None)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            logits = surrogate_clip_model.logit_scale.exp() * image_features @ surrogate_text_features.t()
+
+            true_class_logits = logits.gather(1, labels.unsqueeze(1)).squeeze(1)
+            other_logits = logits.clone()
+            other_logits.scatter_(1, labels.unsqueeze(1), -float('inf'))
+            max_other_logits = other_logits.max(1)[0]
+            
+            class_loss = torch.clamp(true_class_logits - max_other_logits, min=-c).sum()
+            dist_loss = torch.sum((images_adv - images_orig) ** 2)
+            loss = dist_loss + c * class_loss
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        images_adv_final = (0.5 * (torch.tanh(w) + 1)).detach()
+        return torch.clamp(images_adv_final, min=0, max=1)
 
     def _capture_training_dataset(self):
         """
@@ -714,35 +717,35 @@ class PromptCLIP_Shallow:
         return acc
 
     def load_dataset(self):
-        # --- MODIFIED: Set up comprehensive attack configs ---
         train_attack_cfg = None
         if self.cfg.get("use_attacked_dataset", False) and self.cfg.get("attack_train", False):
             train_attack_cfg = {
-                "model": self,
+                "model_wrapper": self,
+                "surrogate_clip_model": self.surrogate_clip_model,
+                "surrogate_preprocess": self.surrogate_preprocess,
+                "surrogate_prompt_text": self.cfg.get("attack_surrogate_prompt_text", "a photo of a {}"),
                 "type": self.cfg.get("attack_type_train", "pgd"),
                 "ratio": self.cfg.get("attack_train_ratio", 0.5),
-                # PGD params
                 "eps": self.cfg.get("pgd_eps_train", 8/255.0),
                 "alpha": self.cfg.get("pgd_alpha_train", 2/255.0),
                 "steps": self.cfg.get("pgd_steps_train", 10),
-                # CW params (shared for simplicity, can be split if needed)
                 "c": self.cfg.get("cw_c", 1.0),
                 "lr": self.cfg.get("cw_lr", 0.01),
-                # Note: CW uses 'steps' from PGD for iteration count
             }
             train_attack_cfg["steps"] = self.cfg.get("cw_steps", 20) if train_attack_cfg["type"] == "cw" else train_attack_cfg["steps"]
             
         test_attack_cfg = None
         if self.cfg.get("use_attacked_dataset", False) and self.cfg.get("attack_test", False):
             test_attack_cfg = {
-                "model": self,
+                "model_wrapper": self,
+                "surrogate_clip_model": self.surrogate_clip_model,
+                "surrogate_preprocess": self.surrogate_preprocess,
+                "surrogate_prompt_text": self.cfg.get("attack_surrogate_prompt_text", "a photo of a {}"),
                 "type": self.cfg.get("attack_type_test", "pgd"),
                 "ratio": self.cfg.get("attack_test_ratio", 0.5),
-                # PGD params
                 "eps": self.cfg.get("pgd_eps_test", 8/255.0),
                 "alpha": self.cfg.get("pgd_alpha_test", 2/255.0),
                 "steps": self.cfg.get("pgd_steps_test", 20),
-                # CW params
                 "c": self.cfg.get("cw_c", 1.0),
                 "lr": self.cfg.get("cw_lr", 0.01),
             }
@@ -753,42 +756,11 @@ class PromptCLIP_Shallow:
             if self.task_name == 'CIFAR10':
                 _, self.test_loader_clean = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, attack_config=None)
             elif self.task_name in ['StanfordCars', 'OxfordPets', 'UCF-101', 'DTD', 'EuroSAT', 'Food101', 'caltech101', 'SUN397', 'ImageNet']:
-                task_config = self.cfg.get(self.task_name, {})
-                dataset_dir = task_config.get('dataset_dir', self.task_name + "_Gen")
+                dataset_dir = self.task_name + "_Gen" # Simplified logic
                 _, self.test_loader_clean = load_test(batch_size=self.batch_size, preprocess=self.preprocess,
                                                             root=self.data_dir, dataset_dir=dataset_dir, attack_config=None)
             else: # CIFAR100 and other unhandled cases
-                _, self.test_loader_clean = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess)
-
-        # --- DATASET LOADING (no changes needed below this line) ---
-        if self.task_name == 'CIFAR100':
-            self.dataset = CIFAR100(self.data_dir, transform=self.preprocess, download=True)
-            self.classes = self.dataset.classes
-            self.n_cls = len(self.classes)
-            self.train_data,self.train_loader = load_train_cifar100(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed, attack_config=train_attack_cfg)
-            self.test_data, self.test_loader = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=test_attack_cfg)
-        elif self.task_name == 'CIFAR10':
-            self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=True)
-            self.classes = self.dataset.classes
-            self.n_cls = len(self.classes)
-            self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed, root=self.data_dir, attack_config=train_attack_cfg)
-            self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, attack_config=test_attack_cfg)
-        elif self.task_name == 'StanfordCars':
-            self.train_data,self.train_loader = load_train(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="Cars_Gen", attack_config=train_attack_cfg)
-            self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="Cars_Gen", attack_config=test_attack_cfg)
-            self.classes = self.train_data.classes
-            self.n_cls = len(self.classes)
-        # ... and so on for all other datasets ...
-        # (The rest of the dataset loading logic is repetitive and doesn't need to change)
-        elif self.task_name == 'ImageNet':
-            self.train_data,self.train_loader = load_train(batch_size=self.batch_size,seed=self.seed,shots=self.k_shot,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="imagenet", attack_config=train_attack_cfg)
-            self.test_data,self.test_loader = load_test(batch_size=self.batch_size,preprocess=self.preprocess,
-                                                           root=self.data_dir,dataset_dir="imagenet", attack_config=test_attack_cfg)
-            self.classes = self.train_data.classes
-            self.n_cls = len(self.classes)
+                _, self.test_loader_clean = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=None)
 
 
     def parse_batch(self,batch):

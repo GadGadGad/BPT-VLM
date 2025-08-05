@@ -40,6 +40,14 @@ prompt_group.add_argument("--learned_prompt_pos", type=str, default="prefix", ch
 
 parser.add_argument("--maximize_loss", action='store_true', help='Tune prompts to maximize the loss instead of minimizing it')
 
+surrogate_group = parser.add_argument_group('Adversarial Attack Surrogate Configuration')
+surrogate_group.add_argument("--attack_surrogate_model", type=str, default=None,
+                             help="Specify a different model architecture for generating attacks (e.g., 'RN50', 'ViT-L/14'). "
+                                  "If None, uses the main backbone.")
+surrogate_group.add_argument("--attack_surrogate_prompt_text", type=str, default="a photo of a {}",
+                             help="Text prompt template to use with the surrogate model for attack generation. "
+                                  "Use '{}' as a placeholder for the class name.")
+
 # --- MODIFIED: Expanded PGD/FGSM/CW Attacked Dataset Generation Arguments ---
 attack_group = parser.add_argument_group('Adversarial Attack Configuration')
 attack_group.add_argument("--use_attacked_dataset", action='store_true', help="Enable generation/use of a PGD-attacked dataset.")
@@ -58,7 +66,7 @@ pgd_group.add_argument("--pgd_alpha_train", type=float, default=2/255.0, help="P
 pgd_group.add_argument("--pgd_steps_train", type=int, default=10, help="Number of PGD attack steps for training set.")
 pgd_group.add_argument("--pgd_eps_test", type=float, default=8/255.0, help="PGD/FGSM attack epsilon for test set.")
 pgd_group.add_argument("--pgd_alpha_test", type=float, default=2/255.0, help="PGD attack alpha (step size) for test set.")
-pgd_group.add_argument("--pgd_steps_test", type=int, default=20, help="Number of PGD attack steps for test set.")
+pgd_group.add_argument("--pgd_steps_test", type=int, default=10, help="Number of PGD attack steps for test set.")
 
 cw_group = attack_group.add_argument_group('CW Parameters')
 cw_group.add_argument("--cw_c", type=float, default=1.0, help="CW attack confidence parameter (trade-off between dist and class loss).")
@@ -112,6 +120,9 @@ cfg["pgd_steps_test"] = args.pgd_steps_test
 cfg["cw_c"] = args.cw_c
 cfg["cw_lr"] = args.cw_lr
 cfg["cw_steps"] = args.cw_steps
+# Surrogate model
+cfg["attack_surrogate_model"] = args.attack_surrogate_model
+cfg["attack_surrogate_prompt_text"] = args.attack_surrogate_prompt_text
 # Noise
 cfg["noise_type_text"] = args.noise_type_text
 cfg["noise_type_visual"] = args.noise_type_visual
@@ -137,6 +148,8 @@ if cfg['n_prompt_tokens_L'] == 0:
     cfg['intrinsic_dim_L'] = 0
 if cfg['n_prompt_tokens_V'] == 0:
     cfg['intrinsic_dim_V'] = 0
+    
+
 output_dir = os.path.join(cfg["output_dir"], args.task_name)
 Analysis_Util.mkdir_if_missing(output_dir)
 
@@ -175,14 +188,22 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 intrinsic_dim_L = cfg["intrinsic_dim_L"]
 intrinsic_dim_V = cfg["intrinsic_dim_V"]
 
+surrogate_clip_model = None
+surrogate_preprocess = None
+if args.use_attacked_dataset and args.attack_surrogate_model:
+    logger.info(f"Loading surrogate model '{args.attack_surrogate_model}' for attack generation.")
+    # We load the surrogate model here and pass it into the main class.
+    # This keeps the model loading logic in the main script.
+    surrogate_clip_model, surrogate_preprocess = clip.load(args.attack_surrogate_model, device=device)
+    
 if args.task_name in __classification__:
-    prompt_clip = PromptCLIP_Shallow(args.task_name, cfg)
+    prompt_clip = PromptCLIP_Shallow(args.task_name, cfg,
+                                    surrogate_clip_model=surrogate_clip_model,
+                                    surrogate_preprocess=surrogate_preprocess)
 else:
      logger.error(f"Task type for '{args.task_name}' not fully implemented.")
      exit()
 
-# ... (fitness_eval, optimizer setup, etc. remain the same) ...
-# ... (omitting for brevity)
 def fitness_eval(prompt_zip_np):
     prompt_zip_np = np.array(prompt_zip_np)
     prompt_text_intrinsic = None
@@ -265,6 +286,9 @@ logger.info(f"Budget: {opt_cfg['budget']}")
 
 if args.use_attacked_dataset:
     logger.info("--- Adversarial Attack Settings ---")
+    surrogate_name = cfg['attack_surrogate_model'] if cfg['attack_surrogate_model'] else cfg['backbone']
+    logger.info(f"Attack Generation Model (Surrogate): {surrogate_name}")
+    logger.info(f"Attack Generation Prompt: '{cfg['attack_surrogate_prompt_text'].format('[CLASS]')}'")
     if args.attack_train:
         logger.info(f"Train Attack: Type={args.attack_type_train.upper()}, Ratio={args.attack_train_ratio}")
         if args.attack_type_train in ['pgd', 'fgsm']:

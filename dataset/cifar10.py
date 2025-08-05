@@ -8,10 +8,17 @@ import pickle
 from tqdm import tqdm
 #---------------------------------------------- device:cpu dtype:float32-----------------------------------------------
 
-def _construct_attacked_data(clean_data, attack_config, preprocess_fn, name="dataset"):
-    """Helper function to generate PGD attacked data."""
+def _construct_attacked_data(clean_data, attack_config, name="dataset"):
+    """Helper function to generate PGD attacked data using a surrogate model."""
     attacked_data = []
-    model = attack_config['model']
+    
+    # Unpack the config
+    model_wrapper = attack_config['model_wrapper']
+    surrogate_model = attack_config['surrogate_clip_model']
+    # The preprocess function must match the surrogate model
+    surrogate_preprocess_fn = attack_config['surrogate_preprocess']
+    prompt_template = attack_config['surrogate_prompt_text']
+    
     ratio = attack_config['ratio']
     eps = attack_config['eps']
     alpha = attack_config['alpha']
@@ -21,14 +28,20 @@ def _construct_attacked_data(clean_data, attack_config, preprocess_fn, name="dat
     attack_indices = np.random.choice(len(clean_data), num_to_attack, replace=False)
     attack_indices_set = set(attack_indices)
 
-    print(f"Attacking {num_to_attack}/{len(clean_data)} images for the {name}...")
+    print(f"Generating attacks using surrogate '{surrogate_model.visual.transformer.width}x{surrogate_model.visual.transformer.layers}' "
+          f"for {num_to_attack}/{len(clean_data)} images for the {name}...")
+
+    # --- Pre-calculate surrogate text features ONCE ---
+    surrogate_text_features = model_wrapper.get_surrogate_text_features(prompt_template)
     
     batch_size = 64 # Internal batch size for attack generation
     for i in tqdm(range(0, len(clean_data), batch_size), desc=f"Generating {name} Attack"):
+        # We always start from the clean PIL images
         batch_pil_images = [item[0] for item in clean_data[i:i+batch_size]]
-        batch_labels = torch.tensor([item[1] for item in clean_data[i:i+batch_size]], device=model.device)
+        batch_labels = torch.tensor([item[1] for item in clean_data[i:i+batch_size]], device=model_wrapper.device)
         
-        batch_images_tensor = torch.stack([preprocess_fn(img) for img in batch_pil_images]).to(model.device)
+        # Preprocess images specifically for the surrogate model
+        batch_images_tensor = torch.stack([surrogate_preprocess_fn(img) for img in batch_pil_images]).to(model_wrapper.device)
 
         indices_in_batch_to_attack = [j for j, k in enumerate(range(i, i+len(batch_labels))) if k in attack_indices_set]
 
@@ -36,13 +49,20 @@ def _construct_attacked_data(clean_data, attack_config, preprocess_fn, name="dat
             images_to_attack = batch_images_tensor[indices_in_batch_to_attack]
             labels_of_attacked = batch_labels[indices_in_batch_to_attack]
 
-            attacked_images_tensor = model._perform_pgd_attack(images_to_attack, labels_of_attacked, eps, alpha, steps)
+            # Call the PGD function, passing all necessary surrogate components
+            attacked_images_tensor = model_wrapper._perform_pgd_attack(
+                images_to_attack, labels_of_attacked, eps, alpha, steps,
+                surrogate_clip_model=surrogate_model,
+                surrogate_text_features=surrogate_text_features
+            )
             batch_images_tensor[indices_in_batch_to_attack] = attacked_images_tensor
-
+        
+        # The final dataset is composed of tensors (attacked or clean) and labels
         for img_tensor, label_tensor in zip(batch_images_tensor, batch_labels):
             attacked_data.append([img_tensor.cpu(), label_tensor.cpu().item()])
 
     return attacked_data
+
 
 class Cifar_FewshotDataset(Dataset):
     def __init__(self, args, attack_config=None):
