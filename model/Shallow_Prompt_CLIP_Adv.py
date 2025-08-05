@@ -482,7 +482,7 @@ class PromptCLIP_Shallow:
         return final_loss
 
     @torch.no_grad()
-     def eval(self, prompt_zip):
+    def eval(self, prompt_zip):
         prompt_text_list_or_tensor, prompt_image_list_or_tensor = prompt_zip[0], prompt_zip[1]
         self.num_call += 1 # num_call increments per fitness evaluation
         
