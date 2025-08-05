@@ -25,19 +25,25 @@ class PromptCLIP_Shallow:
         self.batch_size = cfg["batch_size"]
         self.k_shot = cfg["k_shot"]
         self.seed = cfg["seed"]
-        self.cfg = cfg # Store cfg for PGD params
+        self.cfg = cfg # Store cfg for attack params
         self.initial_prompt_text = cfg.get("initial_prompt_text", None)
         self.learned_prompt_pos = cfg.get("learned_prompt_pos", "prefix")
         self.test_every_gens = cfg.get("test_every_n_gens", None) 
         self.num_call = 0
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model, self.preprocess = clip.load(self.backbone,device=self.device)
+        
+        # This is the TARGET model being optimized
+        self.model, self.preprocess = clip.load(self.backbone, device=self.device)
+
+        # --- NEW: Store the surrogate model ---
         self.surrogate_clip_model = surrogate_clip_model
         self.surrogate_preprocess = surrogate_preprocess
         if self.surrogate_clip_model is None:
             # If no surrogate is provided, it defaults to the main model
             self.surrogate_clip_model = self.model
             self.surrogate_preprocess = self.preprocess
+            logger.info("No surrogate model specified. Using the main backbone for attack generation.")
+        
         self.loss = []
         self.acc = []
         self.acc_clean_during_attack_run = []
@@ -51,7 +57,7 @@ class PromptCLIP_Shallow:
         self.noise_type_visual = cfg.get("noise_type_visual", "none")
         self.noise_level = cfg.get("noise_level", 0.1)
         
-        # --- REORDERED: Initialize all model-dependent components BEFORE dataset loading ---
+        # --- Initialize all model-dependent components ---
         
         # Text Encoder
         self.n_prompt_tokens_L = cfg["n_prompt_tokens_L"]
@@ -73,6 +79,12 @@ class PromptCLIP_Shallow:
         self.logit_scale = self.model.logit_scale
         self.dtype = self.model.dtype 
         self.sigma = cfg["sigma"]
+        
+        # ***** CORRECTED ORDER: LOAD DATASET HERE *****
+        # Now it is safe to load the dataset, as it has access to all required model components.
+        # This call will define `self.classes`, `self.n_cls`, etc.
+        self.load_dataset()
+        # ***** END CORRECTION *****
         
         # Language Linear Layer
         self.linear_L = None
@@ -105,8 +117,6 @@ class PromptCLIP_Shallow:
         else:
             logger.info("Visual prompt tuning disabled (n_prompt_tokens_V or intrinsic_dim_V is 0).")
         
-        # Now, it is safe to load the dataset, as it has access to all required model components.
-        self.load_dataset()
         self._capture_training_dataset() # Capture the dataset for saving
 
         # Final setup after model and data are ready
@@ -126,7 +136,7 @@ class PromptCLIP_Shallow:
         self.best_accuracy = 0.0
         self.best_accuracy_attack = 0.0 
         self.best_train_accuracy = 0.0
-        
+            
     @torch.no_grad()
     def get_surrogate_text_features(self, prompt_template):
         """Generates text features using the surrogate model and a given prompt template."""
