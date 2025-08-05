@@ -19,19 +19,24 @@ def _construct_attacked_data(clean_data, attack_config, name="dataset"):
     surrogate_preprocess_fn = attack_config['surrogate_preprocess']
     prompt_template = attack_config['surrogate_prompt_text']
     
+    attack_type = attack_config['type']
     ratio = attack_config['ratio']
-    eps = attack_config['eps']
-    alpha = attack_config['alpha']
-    steps = attack_config['steps']
     
     num_to_attack = int(len(clean_data) * ratio)
     attack_indices = np.random.choice(len(clean_data), num_to_attack, replace=False)
     attack_indices_set = set(attack_indices)
 
-    print(f"Generating attacks using surrogate '{surrogate_model.visual.transformer.width}x{surrogate_model.visual.transformer.layers}' "
+    # Try to get model name from its attributes for logging
+    try:
+        model_name = os.path.basename(surrogate_model.visual.transformer.state_dict()['positional_embedding'])
+    except:
+        model_name = f"ViT-{surrogate_model.visual.transformer.width}x{surrogate_model.visual.transformer.layers}"
+
+    print(f"Generating '{attack_type.upper()}' attacks using surrogate '{model_name}' "
           f"for {num_to_attack}/{len(clean_data)} images for the {name}...")
 
-    # --- Pre-calculate surrogate text features ONCE ---
+    # Pre-calculate surrogate text features ONCE
+    # This needs the class names, which are on the model_wrapper
     surrogate_text_features = model_wrapper.get_surrogate_text_features(prompt_template)
     
     batch_size = 64 # Internal batch size for attack generation
@@ -48,16 +53,16 @@ def _construct_attacked_data(clean_data, attack_config, name="dataset"):
         if len(indices_in_batch_to_attack) > 0:
             images_to_attack = batch_images_tensor[indices_in_batch_to_attack]
             labels_of_attacked = batch_labels[indices_in_batch_to_attack]
-
-            # Call the PGD function, passing all necessary surrogate components
-            attacked_images_tensor = model_wrapper._perform_pgd_attack(
-                images_to_attack, labels_of_attacked, eps, alpha, steps,
-                surrogate_clip_model=surrogate_model,
-                surrogate_text_features=surrogate_text_features
+            
+            # Use the main dispatcher to handle different attack types
+            attacked_images_tensor = model_wrapper.perform_attack_on_batch(
+                images_to_attack, labels_of_attacked, attack_config
             )
+            
             batch_images_tensor[indices_in_batch_to_attack] = attacked_images_tensor
         
-        # The final dataset is composed of tensors (attacked or clean) and labels
+        # The final dataset is composed of tensors (attacked or clean) and labels.
+        # These tensors are now ready to be consumed by the TARGET model.
         for img_tensor, label_tensor in zip(batch_images_tensor, batch_labels):
             attacked_data.append([img_tensor.cpu(), label_tensor.cpu().item()])
 
@@ -68,21 +73,28 @@ class Cifar_FewshotDataset(Dataset):
     def __init__(self, args, attack_config=None):
         self.root = args["root"]
         self.shots = args["shots"]
+        # This preprocess is for the TARGET model, used only if data is clean.
         self.preprocess = args["preprocess"]
         self.seed = args["seed"]
         
         self.all_train_base = CIFAR10(self.root, transform=None, download=True, train=True)
+        self.classes = self.all_train_base.classes # Expose classes attribute
         clean_data = self.construct_few_shot_data()
 
         if attack_config is None:
             print("Using clean training data for CIFAR10.")
+            # Preprocess for the target model
             self.new_train_data = [[self.preprocess(item[0]), item[1]] for item in clean_data]
         else:
             cache_dir = os.path.join(self.root, "cifar10_cache")
             os.makedirs(cache_dir, exist_ok=True)
             ratio = attack_config['ratio']
             eps = attack_config['eps']
-            cache_fname = f"train_shot_{self.shots}_seed_{self.seed}_ratio_{ratio:.2f}_eps_{eps}.pkl"
+            
+            surrogate_model = attack_config['surrogate_clip_model']
+            surrogate_name = surrogate_model.visual.transformer.width
+            
+            cache_fname = f"train_shot_{self.shots}_seed_{self.seed}_ratio_{ratio:.2f}_eps_{eps}_surrogate_{surrogate_name}.pkl"
             cache_path = os.path.join(cache_dir, cache_fname)
             
             if os.path.exists(cache_path):
@@ -91,7 +103,8 @@ class Cifar_FewshotDataset(Dataset):
                     self.new_train_data = pickle.load(f)
             else:
                 print(f"Generating attacked training data, will cache to {cache_path}")
-                self.new_train_data = _construct_attacked_data(clean_data, attack_config, self.preprocess, "train set")
+                # --- FIX: Removed the extra `self.preprocess` argument ---
+                self.new_train_data = _construct_attacked_data(clean_data, attack_config, "train set")
                 with open(cache_path, "wb") as f:
                     pickle.dump(self.new_train_data, f)
 
@@ -99,12 +112,13 @@ class Cifar_FewshotDataset(Dataset):
         return len(self.new_train_data)
 
     def __getitem__(self, idx):
+        # Data is already a tensor here
         return {"image": self.new_train_data[idx][0], "label": self.new_train_data[idx][1]}
 
     def construct_few_shot_data(self):
         new_train_data = []
         train_shot_count={}
-        all_indices = [_ for _ in range(len(self.all_train_base))]
+        all_indices = list(range(len(self.all_train_base)))
         np.random.seed(self.seed)
         np.random.shuffle(all_indices)
 
@@ -127,9 +141,11 @@ def load_train_cifar10(batch_size=1,shots=16,preprocess=None,seed=42, root=None,
 
 class Cifar_TestDataset(Dataset):
     def __init__(self, args, attack_config=None):
+        # This preprocess is for the TARGET model, used only if data is clean.
         self.preprocess = args["preprocess"]
         self.root = args["root"]
         all_test_base = CIFAR10(self.root, transform=None, download=True, train=False)
+        self.classes = all_test_base.classes # Expose classes attribute
         clean_data = list(all_test_base)
 
         if attack_config is None:
@@ -140,7 +156,11 @@ class Cifar_TestDataset(Dataset):
             os.makedirs(cache_dir, exist_ok=True)
             ratio = attack_config['ratio']
             eps = attack_config['eps']
-            cache_fname = f"test_ratio_{ratio:.2f}_eps_{eps}.pkl"
+
+            surrogate_model = attack_config['surrogate_clip_model']
+            surrogate_name = surrogate_model.visual.transformer.width
+            
+            cache_fname = f"test_ratio_{ratio:.2f}_eps_{eps}_surrogate_{surrogate_name}.pkl"
             cache_path = os.path.join(cache_dir, cache_fname)
 
             if os.path.exists(cache_path):
@@ -149,7 +169,8 @@ class Cifar_TestDataset(Dataset):
                     self.all_test = pickle.load(f)
             else:
                 print(f"Generating attacked test data, will cache to {cache_path}")
-                self.all_test = _construct_attacked_data(clean_data, attack_config, self.preprocess, "test set")
+                # --- FIX: Removed the extra `self.preprocess` argument ---
+                self.all_test = _construct_attacked_data(clean_data, attack_config, "test set")
                 with open(cache_path, "wb") as f:
                     pickle.dump(self.all_test, f)
 
@@ -157,6 +178,7 @@ class Cifar_TestDataset(Dataset):
         return len(self.all_test)
 
     def __getitem__(self, idx):
+        # Data is already a tensor here
         return {"image": self.all_test[idx][0], "label": self.all_test[idx][1]}
 
 
