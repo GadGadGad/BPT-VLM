@@ -17,6 +17,7 @@ logger= logging.getLogger(__name__)
 
 class PromptCLIP_Shallow:
     def __init__(self, task_name, cfg, surrogate_clip_model=None, surrogate_preprocess=None):
+        # 1. Core Configuration
         self.task_name = task_name
         self.opt_name = cfg["opt_name"]
         self.data_dir = cfg["data_dir"]
@@ -27,68 +28,51 @@ class PromptCLIP_Shallow:
         self.batch_size = cfg["batch_size"]
         self.k_shot = cfg["k_shot"]
         self.seed = cfg["seed"]
-        self.cfg = cfg # Store cfg for attack params
+        self.cfg = cfg
         self.initial_prompt_text = cfg.get("initial_prompt_text", None)
         self.learned_prompt_pos = cfg.get("learned_prompt_pos", "prefix")
         self.test_every_gens = cfg.get("test_every_n_gens", None)
         self.num_call = 0
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # This is the TARGET model being optimized
+        # 2. Load Models
         self.model, self.preprocess = clip.load(self.backbone, device=self.device)
-
-        # Store the surrogate model
         self.surrogate_clip_model = surrogate_clip_model
         self.surrogate_preprocess = surrogate_preprocess
         if self.surrogate_clip_model is None:
             self.surrogate_clip_model = self.model
             self.surrogate_preprocess = self.preprocess
             logger.info("No surrogate model specified. Using the main backbone for attack generation.")
-
-        # ***** CORRECTED ORDER: LOAD DATASET FIRST *****
-        # This MUST happen before any component that depends on `self.classes` or `self.n_cls`
-        self.train_data, self.test_data = None, None
-        self.train_loader, self.test_loader = None, None
-        self.classes, self.n_cls = None, None
-        self.test_loader_clean = None
-        self.load_dataset()
-        # ***** END CORRECTION *****
-
-        self.loss = []
-        self.acc = []
-        self.acc_clean_during_attack_run = []
-        self.acc_attack = []
-        self.train_acc = []
-        self._training_dataset_snapshot = None
-
-        # --- Noise injection parameters ---
+            
+        # 3. Define Model-Dependent Attributes
+        self.dtype = self.model.dtype
+        self.logit_scale = self.model.logit_scale
+        self.n_prompt_tokens_L = cfg["n_prompt_tokens_L"]
+        self.intrinsic_dim_L = cfg["intrinsic_dim_L"]
+        self.ctx_dim_L = self.model.ln_final.weight.shape[0]
+        self.n_prompt_tokens_V = cfg["n_prompt_tokens_V"]
+        self.intrinsic_dim_V = cfg["intrinsic_dim_V"]
+        self.ctx_dim_V = self.model.visual.width
+        self.loss_type = cfg["loss_type"]
+        self.sigma = cfg["sigma"]
         self.noise_type_text = cfg.get("noise_type_text", "none")
         self.noise_type_visual = cfg.get("noise_type_visual", "none")
         self.noise_level = cfg.get("noise_level", 0.1)
 
-        # --- Initialize all model-dependent components ---
-        # Text Encoder
-        self.n_prompt_tokens_L = cfg["n_prompt_tokens_L"]
-        self.intrinsic_dim_L = cfg["intrinsic_dim_L"]
-        self.ctx_dim_L = self.model.ln_final.weight.shape[0]
-        self.text_encoder = TextEncoder(self.model)
+        # 4. Load Dataset
+        self.train_data, self.test_data = None, None
+        self.train_loader, self.test_loader = None, None
+        self.classes, self.n_cls = None, None
+        self.test_loader_clean = None
+        self.load_dataset() # Now this is safe to call
 
-        # Image Encoder
-        self.n_prompt_tokens_V = cfg["n_prompt_tokens_V"]
-        self.ctx_dim_V = self.model.visual.width
-        self.intrinsic_dim_V = cfg["intrinsic_dim_V"]
+        # 5. Initialize Encoders and Learnable Components
+        self.text_encoder = TextEncoder(self.model)
         self.image_encoder = VisionEncoder(self.model)
         self.image_encoder.n_prompt_tokens_V = self.n_prompt_tokens_V
-
-        # Other Model-related attributes
-        self.loss_type = cfg["loss_type"]
-        self.init_prompt = None
         self.imsize = self.image_encoder.input_resolution
-        self.logit_scale = self.model.logit_scale
-        self.dtype = self.model.dtype
-        self.sigma = cfg["sigma"]
+        self.init_prompt = None
 
-        # Language Linear Layer
         self.linear_L = None
         if self.n_prompt_tokens_L > 0 and self.intrinsic_dim_L > 0:
             self.linear_L = torch.nn.Linear(self.intrinsic_dim_L, self.n_prompt_tokens_L * self.ctx_dim_L,
@@ -119,25 +103,23 @@ class PromptCLIP_Shallow:
         else:
             logger.info("Visual prompt tuning disabled (n_prompt_tokens_V or intrinsic_dim_V is 0).")
 
-        self._capture_training_dataset() # Capture the dataset for saving
+        # 6. Final Setup
+        self.loss = []
+        self.acc = []
+        self.acc_clean_during_attack_run = []
+        self.train_acc = []
+        self._capture_training_dataset()
 
-        # Final setup after model and data are ready
         self.maximize_loss = cfg.get("maximize_loss", False)
-        self.best_objective_loss_value = None
-        if self.maximize_loss:
-            self.best_objective_loss_value = -float('inf')
-            logger.info(f"--- Prompt Optimization Mode: MAXIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
-        else:
-            self.best_objective_loss_value = float('inf')
-            logger.info(f"--- Prompt Optimization Mode: MINIMIZE Loss (Targeting value: {self.best_objective_loss_value}) ---")
-
-        logger.info("--- Standard (Clean) Prompt Optimization ---")
+        self.best_objective_loss_value = -float('inf') if self.maximize_loss else float('inf')
+        log_msg = "MAXIMIZE" if self.maximize_loss else "MINIMIZE"
+        logger.info(f"--- Prompt Optimization Mode: {log_msg} Loss (Targeting value: {self.best_objective_loss_value}) ---")
 
         self.best_prompt_text = None
         self.best_prompt_image = None
         self.best_accuracy = 0.0
-        self.best_accuracy_attack = 0.0
         self.best_train_accuracy = 0.0
+
     
     @torch.no_grad()
     def get_surrogate_text_features(self, prompt_template):
@@ -147,7 +129,7 @@ class PromptCLIP_Shallow:
         tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts]).to(self.device)
         
         # Use the surrogate model to encode text
-        text_features = self.surrogate_clip_model.encode_text(tokenized_prompts).type(self.model.dtype)
+        text_features = self.surrogate_clip_model.encode_text(tokenized_prompts).type(self.dtype)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         return text_features
     
