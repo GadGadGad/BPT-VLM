@@ -138,9 +138,6 @@ class PromptCLIP_Shallow:
         self.best_accuracy = 0.0
         self.best_accuracy_attack = 0.0
         self.best_train_accuracy = 0.0
-
-    # ... The rest of the file (all methods from get_surrogate_text_features onwards) remains exactly the same.
-    # I'm omitting it here for brevity, but no other changes are needed in the file.
     
     @torch.no_grad()
     def get_surrogate_text_features(self, prompt_template):
@@ -150,7 +147,7 @@ class PromptCLIP_Shallow:
         tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts]).to(self.device)
         
         # Use the surrogate model to encode text
-        text_features = self.surrogate_clip_model.encode_text(tokenized_prompts).type(self.dtype)
+        text_features = self.surrogate_clip_model.encode_text(tokenized_prompts).type(self.model.dtype)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         return text_features
     
