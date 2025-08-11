@@ -322,7 +322,7 @@ class PromptCLIP_Shallow:
                                                           root=self.data_dir, dataset_dir=dataset_dir, attack_config=train_attack_cfg, seed=self.seed)
             self.test_data, self.test_loader = load_test(batch_size=self.batch_size, preprocess=self.preprocess,
                                                          root=self.data_dir, dataset_dir=dataset_dir, attack_config=test_attack_cfg)
-            print("self.classes: " self.train_data.classes)
+            print("self.classes: ", self.train_data.classes)
             self.classes = self.train_data.classes
             self.n_cls = len(self.classes)
 
