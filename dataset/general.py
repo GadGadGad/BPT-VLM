@@ -166,7 +166,7 @@ class TestDataset(Dataset):
         self.preprocess = args["preprocess"] # This is for the TARGET model
         self.root = args["root"]
         self.dataset_dir = args["dataset_dir"]
-
+        
         self.dataset_dir = os.path.join(self.root, self.dataset_dir)
         self.image_dir = os.path.join(self.dataset_dir, "image_data")
         self.split_path = os.path.join(self.dataset_dir, "split.json")
