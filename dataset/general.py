@@ -151,7 +151,6 @@ class FewshotDataset(Dataset):
                 new_train_data_info.append((path, label, classname))
                 train_shot_count[label] += 1
         classes = [classes_dict[i] for i in range(len(classes_dict))]
-        print(classes)
         return new_train_data_info, classes
 
 
