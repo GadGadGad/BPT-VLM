@@ -287,27 +287,52 @@ class PromptCLIP_Shallow:
             }
             test_attack_cfg["steps"] = self.cfg.get("cw_steps", 20) if test_attack_cfg["type"] == "cw" else test_attack_cfg["steps"]
 
+        # --- REFACTORED LOGIC TO PREVENT INITIALIZATION ERROR ---
+
+        # STEP 1: Discover class names and set them on the instance FIRST.
+        if self.task_name == 'CIFAR100':
+            self.classes = CIFAR100(self.data_dir, download=True).classes
+        elif self.task_name == 'CIFAR10':
+            self.classes = CIFAR10(self.data_dir, download=True).classes
+        else: # General datasets need to load a temporary instance to discover classes
+            dataset_dir_map = {
+                'StanfordCars': "Cars_Gen", 'OxfordPets': "OxfordPets_Gen", 'UCF-101': "UCF-101_Gen",
+                'DTD': "DTD_Gen", 'EuroSAT': "EuroSAT_Gen", 'Food101': "Food101_Gen",
+                'caltech101': "caltech101_Gen", 'SUN397': "SUN397_Gen", 'ImageNet': "imagenet"
+            }
+            dataset_dir = dataset_dir_map.get(self.task_name, self.task_name + "_Gen")
+            # This is a lightweight operation that only reads JSON and constructs the few-shot list info.
+            temp_train_data, _ = load_train(batch_size=1, shots=self.k_shot, preprocess=self.preprocess,
+                                            root=self.data_dir, dataset_dir=dataset_dir,
+                                            attack_config=None, # IMPORTANT: No attack config
+                                            seed=self.seed)
+            self.classes = temp_train_data.classes
+        
+        self.n_cls = len(self.classes)
+        logger.info(f"Discovered {self.n_cls} classes for dataset '{self.task_name}'.")
+
+        # STEP 2: Now that self.classes is set, load the actual datasets with attack configs.
+        # The attack generation process can now safely call `get_surrogate_text_features`.
         if test_attack_cfg is not None:
             logger.info("Attack on test set is enabled. Also loading a clean test set for baseline comparison.")
             if self.task_name == 'CIFAR10':
                 _, self.test_loader_clean = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, attack_config=None)
             elif self.task_name in ['StanfordCars', 'OxfordPets', 'UCF-101', 'DTD', 'EuroSAT', 'Food101', 'caltech101', 'SUN397', 'ImageNet']:
-                dataset_dir = self.task_name + "_Gen" # Simplified logic
+                dataset_dir_map = {
+                    'StanfordCars': "Cars_Gen", 'OxfordPets': "OxfordPets_Gen", 'UCF-101': "UCF-101_Gen",
+                    'DTD': "DTD_Gen", 'EuroSAT': "EuroSAT_Gen", 'Food101': "Food101_Gen",
+                    'caltech101': "caltech101_Gen", 'SUN397': "SUN397_Gen", 'ImageNet': "imagenet"
+                }
+                dataset_dir = dataset_dir_map.get(self.task_name, self.task_name + "_Gen")
                 _, self.test_loader_clean = load_test(batch_size=self.batch_size, preprocess=self.preprocess,
                                                             root=self.data_dir, dataset_dir=dataset_dir, attack_config=None)
             else: # CIFAR100 and other unhandled cases
                 _, self.test_loader_clean = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=None)
 
         if self.task_name == 'CIFAR100':
-            self.dataset = CIFAR100(self.data_dir, transform=self.preprocess, download=True)
-            self.classes = self.dataset.classes
-            self.n_cls = len(self.classes)
             self.train_data,self.train_loader = load_train_cifar100(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed, attack_config=train_attack_cfg)
             self.test_data, self.test_loader = load_test_cifar100(batch_size=self.batch_size, preprocess=self.preprocess, attack_config=test_attack_cfg)
         elif self.task_name == 'CIFAR10':
-            self.dataset = CIFAR10(self.data_dir, transform=self.preprocess, download=True)
-            self.classes = self.dataset.classes
-            self.n_cls = len(self.classes)
             self.train_data,self.train_loader = load_train_cifar10(batch_size=self.batch_size,shots=self.k_shot,preprocess=self.preprocess, seed=self.seed, root=self.data_dir, attack_config=train_attack_cfg)
             self.test_data, self.test_loader = load_test_cifar10(batch_size=self.batch_size, preprocess=self.preprocess, root=self.data_dir, attack_config=test_attack_cfg)
         else: # Handle general datasets
@@ -322,8 +347,6 @@ class PromptCLIP_Shallow:
                                                           root=self.data_dir, dataset_dir=dataset_dir, attack_config=train_attack_cfg, seed=self.seed)
             self.test_data, self.test_loader = load_test(batch_size=self.batch_size, preprocess=self.preprocess,
                                                          root=self.data_dir, dataset_dir=dataset_dir, attack_config=test_attack_cfg)
-            self.classes = self.train_data.classes
-            self.n_cls = len(self.classes)
 
     def _capture_training_dataset(self):
         """
