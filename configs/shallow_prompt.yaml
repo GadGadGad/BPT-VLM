@@ -12,7 +12,7 @@ batch_size: 128
 popsize: 30
 train_mode: true
 DTD:
-  budget: 36000
+  budget: 20000
   test_every: 12
 
 UCF-101:
