@@ -63,7 +63,7 @@ attack_group.add_argument("--attack_test_ratio", type=float, default=0.5, help="
 pgd_group = attack_group.add_argument_group('PGD/FGSM Parameters')
 pgd_group.add_argument("--pgd_eps_train", type=float, default=8/255.0, help="PGD/FGSM attack epsilon for training set.")
 pgd_group.add_argument("--pgd_alpha_train", type=float, default=2/255.0, help="PGD attack alpha (step size) for training set.")
-pgd_group.add_argument("--pgd_steps_train", type=int, default=100, help="Number of PGD attack steps for training set.")
+pgd_group.add_argument("--pgd_steps_train", type=int, default=3, help="Number of PGD attack steps for training set.")
 pgd_group.add_argument("--pgd_eps_test", type=float, default=8/255.0, help="PGD/FGSM attack epsilon for test set.")
 pgd_group.add_argument("--pgd_alpha_test", type=float, default=2/255.0, help="PGD attack alpha (step size) for test set.")
 pgd_group.add_argument("--pgd_steps_test", type=int, default=100, help="Number of PGD attack steps for test set.")
